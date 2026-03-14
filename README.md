@@ -18,7 +18,7 @@
 
 ## 📖 技术原理解析：为什么是 Realm？
 
-传统的 Linux 端口转发多基于 `iptables` / `nftables`。它们运行在内核网络层（L3/L4 NAT），性能极高，但存在一个致命缺陷：**IPv4 和 IPv6 物理隔离，无法原生实现 4-to-6 或 6-to-4 的跨协议转换**（必须借助于第三方内核模块，配置极为严苛）。
+传统的 Linux 端口转发多基于 `iptables` / `nftables`。它们运行在内核网络层（L3/L4 NAT），性能极高，但存在一个致命缺陷：**IPv4 和 IPv6 物理隔离，无法原生实现 4-to-6 或 6-to-4 的跨协议转换**。
 
 **Realm 带来了降维打击的解决方案：**
 
@@ -32,7 +32,7 @@
 在你全新的 Linux 服务器上，只需执行以下一键命令即可拉起面板：
 
 ```bash
-wget -O realm-install.sh [https://raw.githubusercontent.com/haoxiang2004/realm-install/main/realm-install.sh](https://raw.githubusercontent.com/haoxiang2004/realm-install/main/realm-install.sh) && bash realm-install.sh
+wget -O realm-install.sh https://raw.githubusercontent.com/haoxiang2004/realm-install/main/realm-install.sh && bash realm-install.sh
 ```
 
 > **💡 提示**：首次运行后，脚本会自动将自身注册为系统级命令。以后你只需在终端直接输入 `realm-panel` 即可唤出管理菜单！
@@ -69,14 +69,17 @@ wget -O realm-install.sh [https://raw.githubusercontent.com/haoxiang2004/realm-i
 
 ## 📝 常见问题 (FAQ)
 
-**Q: 为什么我添加了规则，但是连不上？** A: 请检查你的服务器防火墙（如 `ufw`, `firewalld`）或云服务商（如阿里云、AWS 等）的安全组设置，确保你设置的**本地监听端口**已经放行了 TCP 和 UDP 流量。
+**Q: 为什么我添加了规则，但是连不上？**
+A: 请检查你的服务器防火墙（如 `ufw`, `firewalld`）或云服务商（如阿里云、AWS 等）的安全组设置，确保你设置的**本地监听端口**已经放行了 TCP 和 UDP 流量。
 
-**Q: 我的目标落地机只有 IPv6，怎么填？** A: 脚本具备智能防呆设计，如果你输入了纯 IPv6 地址（如 `2001:db8::1`），面板会自动为你加上中括号补全为标准的 `[2001:db8::1]` 格式，你直接输入即可。
+**Q: 我的目标落地机只有 IPv6，怎么填？**
+A: 脚本具备智能防呆设计，如果你输入了纯 IPv6 地址（如 `2001:db8::1`），面板会自动为你加上中括号补全为标准的 `[2001:db8::1]` 格式，你直接输入即可。
 
-**Q: 如何更新 Realm 核心到最新版？** A: 直接在面板主菜单输入 `1`，脚本会自动探测 GitHub 的最新 Release 版本并覆盖安装，你的所有转发规则都不会丢失。
+**Q: 如何更新 Realm 核心到最新版？**
+A: 直接在面板主菜单输入 `1`，脚本会自动探测 GitHub 的最新 Release 版本并覆盖安装，你的所有转发规则都不会丢失。
 
 ---
 
 ## 📜 开源协议
 
-本项目基于 [MIT License](LICENSE) 协议开源。欢迎提交 Issue 或 Pull Request 来共同完善这个工具！# realm-install
+本项目基于 MIT License 协议开源。欢迎提交 Issue 或 Pull Request 来共同完善这个工具！
