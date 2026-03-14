@@ -1,1 +1,82 @@
-# realm-install
+# Realm 一键部署与 TUI 管理面板
+
+![Bash](https://img.shields.io/badge/Language-Bash-4EAA25?style=flat-square&logo=gnu-bash)
+![Platform](https://img.shields.io/badge/Platform-Linux-blue?style=flat-square&logo=linux)
+![License](https://img.shields.io/badge/License-MIT-orange?style=flat-square)
+
+这是一个专为 [Realm](https://github.com/zhboner/realm) 打造的极简、高效、自动化的终端可视化管理面板（TUI）。告别繁琐的命令行和容易手残写错的 TOML 配置文件，只需一键运行，即可轻松实现服务器流量的跨协议（IPv4/IPv6）无缝转发。
+
+## ✨ 核心特性
+
+- **🚀 零依赖一键安装**：自动识别服务器架构 (x86_64 / ARM64)，自动拉取最新版 Realm 二进制文件。
+- **🖥️ 交互式 TUI 面板**：全局注册 `realm-panel` 命令，随时随地在终端呼出管理菜单。
+- **🌐 完美双栈支持**：添加节点时，底层自动绑定 `[::]`，**原生支持同一端口同时接管 IPv4 和 IPv6 入站流量**。
+- **🛡️ 纯净卸载逻辑**：支持一键彻底卸载，自动清理二进制文件、配置目录和 Systemd 守护进程，不留任何垃圾。
+- **⚙️ 智能配置引擎**：内置微型 Python 解析器，增删查改规则全自动重写 `config.toml` 并安全重启服务，拒绝语法错误。
+
+---
+
+## 📖 技术原理解析：为什么是 Realm？
+
+传统的 Linux 端口转发多基于 `iptables` / `nftables`。它们运行在内核网络层（L3/L4 NAT），性能极高，但存在一个致命缺陷：**IPv4 和 IPv6 物理隔离，无法原生实现 4-to-6 或 6-to-4 的跨协议转换**（必须借助于第三方内核模块，配置极为严苛）。
+
+**Realm 带来了降维打击的解决方案：**
+
+1. **用户态 L4 代理 (User-space Proxy)**：Realm 不修改底层的 IP 报文头，而是直接接管 Socket 连接，将提取出的纯数据在“左右手”两个连接之间搬运。它天然无视了底层的 IPv4/IPv6 协议壁垒。
+2. **真·单端口双栈监听**：本管理面板在生成规则时，巧妙利用了 Linux 的 `bindv6only=0` 特性，默认将监听地址配置为 `[::]`。这使得系统能**在同一个本地端口上，同时吃进 IPv4 和 IPv6 的访客流量**，然后由 Realm 根据目标地址自动发起对应协议的转发连接。
+
+---
+
+## 📦 极速安装 / 启动
+
+在你全新的 Linux 服务器上，只需执行以下一键命令即可拉起面板：
+
+```bash
+wget -O realm-install.sh [https://raw.githubusercontent.com/haoxiang2004/realm-install/main/realm-install.sh](https://raw.githubusercontent.com/haoxiang2004/realm-install/main/realm-install.sh) && bash realm-install.sh
+```
+
+> **💡 提示**：首次运行后，脚本会自动将自身注册为系统级命令。以后你只需在终端直接输入 `realm-panel` 即可唤出管理菜单！
+
+---
+
+## 🛠️ 功能菜单一览
+
+运行 `realm-panel` 后，你将看到如下直观的管理界面：
+
+```text
+################################################
+#        Realm 专线中转面板 (v1.0.0)           #
+################################################
+ 核心状态: ▶ 运行中 (Running)
+------------------------------------------------
+ 1. 安装 / 更新 Realm 核心组件
+ 2. 彻底卸载 Realm 及管理面板
+------------------------------------------------
+ 3. 添加转发规则 (自带 IPv4/v6 双栈监听)
+ 4. 删除转发规则
+ 5. 清空全部规则
+ 6. 查看当前规则
+------------------------------------------------
+ 7. 启动 Realm 服务
+ 8. 停止 Realm 服务
+ 9. 重启 Realm 服务
+ 10.查看 Realm 运行日志
+ 0. 退出面板
+################################################
+```
+
+---
+
+## 📝 常见问题 (FAQ)
+
+**Q: 为什么我添加了规则，但是连不上？** A: 请检查你的服务器防火墙（如 `ufw`, `firewalld`）或云服务商（如阿里云、AWS 等）的安全组设置，确保你设置的**本地监听端口**已经放行了 TCP 和 UDP 流量。
+
+**Q: 我的目标落地机只有 IPv6，怎么填？** A: 脚本具备智能防呆设计，如果你输入了纯 IPv6 地址（如 `2001:db8::1`），面板会自动为你加上中括号补全为标准的 `[2001:db8::1]` 格式，你直接输入即可。
+
+**Q: 如何更新 Realm 核心到最新版？** A: 直接在面板主菜单输入 `1`，脚本会自动探测 GitHub 的最新 Release 版本并覆盖安装，你的所有转发规则都不会丢失。
+
+---
+
+## 📜 开源协议
+
+本项目基于 [MIT License](LICENSE) 协议开源。欢迎提交 Issue 或 Pull Request 来共同完善这个工具！# realm-install
