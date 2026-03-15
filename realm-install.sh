@@ -1,18 +1,20 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 终极管理面板 (V1.0)
+# Realm 终极管理面板 (V1.0 - 重构稳定版)
 # 描述: 专为 Realm 打造的自动化部署与 TUI 管理工具
-# 仓库: https://github.com/haoxiang2004/realm-install
 # ==========================================
 
-sh_ver="1.0.0"
+export LANG=en_US.UTF-8
+sh_ver="1.0.1"
+
+# --- 核心目录与文件 ---
 CONFIG_DIR="/etc/realm"
-CONFIG_FILE="${CONFIG_DIR}/config.toml"
+TOML_FILE="${CONFIG_DIR}/config.toml"
+RULE_FILE="${CONFIG_DIR}/rules.txt"  # 核心真理数据源
 PANEL_CMD="/usr/local/bin/realm-panel"
 REALM_BIN="/usr/local/bin/realm"
 SERVICE_FILE="/etc/systemd/system/realm.service"
-HELPER_PY="/tmp/realm_helper.py"
 REPO_URL="https://raw.githubusercontent.com/haoxiang2004/realm-install/main/realm-install.sh"
 
 RED="\033[31m"
@@ -23,206 +25,296 @@ PLAIN="\033[0m"
 
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 用户运行！${PLAIN}" && exit 1
 
-# 自动注册全局快捷命令
+# 自动注册全局命令
 if [ "$0" != "$PANEL_CMD" ]; then
     curl -sL "$REPO_URL" -o "$PANEL_CMD" 2>/dev/null || cp "$0" "$PANEL_CMD" 2>/dev/null
     chmod +x "$PANEL_CMD" 2>/dev/null
 fi
 
-# --- 基础依赖检测 ---
-check_dependencies() {
-    local pkgs=()
-    command -v python3 &>/dev/null || pkgs+=("python3")
-    command -v wget &>/dev/null || pkgs+=("wget")
-    command -v curl &>/dev/null || pkgs+=("curl")
-    command -v tar &>/dev/null || pkgs+=("tar")
-
-    if [ ${#pkgs[@]} -gt 0 ]; then
-        echo -e "${YELLOW}正在安装基础依赖: ${pkgs[*]} ...${PLAIN}"
-        apt-get update -yqq && apt-get install -yqq "${pkgs[@]}" 2>/dev/null || yum install -y "${pkgs[@]}" 2>/dev/null
+# --- 基础环境配置 ---
+init_env() {
+    mkdir -p "$CONFIG_DIR"
+    touch "$RULE_FILE"
+    
+    # 兼容老版本的残留 TOML，避免冲突
+    if [[ -f "$TOML_FILE" && ! -s "$RULE_FILE" ]]; then
+        mv "$TOML_FILE" "${TOML_FILE}.bak" 2>/dev/null
     fi
 }
 
-# --- Python TOML 辅助模块 ---
-init_python_helper() {
-    cat << 'EOF' > "$HELPER_PY"
-import sys, re, os
-CONF = "/etc/realm/config.toml"
-def read_eps():
-    if not os.path.exists(CONF): return []
-    try:
-        with open(CONF, "r") as f: txt = f.read()
-    except: return []
-    eps = []
-    # 简单的正则匹配 endpoints 块
-    blocks = re.split(r'\[\[endpoints\]\]', txt)[1:]
-    for blk in blocks:
-        l = re.search(r'listen\s*=\s*"([^"]+)"', blk)
-        r = re.search(r'remote\s*=\s*"([^"]+)"', blk)
-        if l and r: eps.append((l.group(1), r.group(1)))
-    return eps
+# --- 核心引擎：从文本生成 TOML ---
+# 将用户的规则列表，100% 无损转换为 TOML 格式
+generate_toml() {
+    cat <<EOF > "$TOML_FILE"
+[network]
+no_tcp = false
+use_udp = true
 
-def write_eps(eps):
-    os.makedirs(os.path.dirname(CONF), exist_ok=True)
-    with open(CONF, "w") as f:
-        f.write("[network]\nno_tcp = false\nuse_udp = true\n\n")
-        for l, r in eps:
-            f.write(f"[[endpoints]]\nlisten = \"{l}\"\nremote = \"{r}\"\n\n")
-
-if len(sys.argv) > 1:
-    cmd = sys.argv[1]
-    if cmd == "list":
-        eps = read_eps()
-        print("EMPTY" if not eps else "\n".join([f"{i+1}@@{l}@@{r}" for i, (l, r) in enumerate(eps)]))
-    elif cmd == "add":
-        eps = read_eps()
-        eps.append((sys.argv[2], sys.argv[3]))
-        write_eps(eps)
-    elif cmd == "del":
-        eps = read_eps()
-        idx = int(sys.argv[2]) - 1
-        if 0 <= idx < len(eps): eps.pop(idx); write_eps(eps)
-    elif cmd == "clear": write_eps([])
 EOF
+    
+    if [[ -s "$RULE_FILE" ]]; then
+        while read -r l_port r_addr r_port; do
+            # 过滤空行或异常行
+            [[ -z "$l_port" || -z "$r_addr" || -z "$r_port" ]] && continue
+            
+            cat <<EOF >> "$TOML_FILE"
+[[endpoints]]
+listen = "[::]:${l_port}"
+remote = "${r_addr}:${r_port}"
+
+EOF
+        done < "$RULE_FILE"
+    fi
 }
 
-# --- 核心管理逻辑 ---
+apply_config() {
+    generate_toml
+    if systemctl is-active --quiet realm; then
+        systemctl restart realm
+        echo -e "${GREEN}✅ 配置已生成，Realm 服务已热重启！${PLAIN}"
+    else
+        systemctl start realm
+        echo -e "${GREEN}✅ 配置已生成，Realm 服务已拉起！${PLAIN}"
+    fi
+    sleep 1.5
+}
+
+# --- 功能模块 ---
+
 install_realm() {
-    echo -e "${YELLOW}>>> 准备安装/更新 Realm...${PLAIN}"
+    echo -e "${YELLOW}>>> 开始安装/更新 Realm 核心组件...${PLAIN}"
+    
     local arch=$(uname -m)
     case "$arch" in
         x86_64) realm_arch="x86_64-unknown-linux-gnu" ;;
         aarch64|arm64) realm_arch="aarch64-unknown-linux-gnu" ;;
-        *) echo -e "${RED}不支持的架构: $arch${PLAIN}"; return ;;
+        *) echo -e "${RED}严重错误: 不支持的系统架构 ${arch}${PLAIN}"; sleep 2; return ;;
     esac
 
+    echo -e "${CYAN}正在请求 GitHub API 获取最新版本...${PLAIN}"
     local latest_ver=$(curl -s https://api.github.com/repos/zhboner/realm/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    [[ -z "$latest_ver" ]] && latest_ver="v2.6.0"
+    if [[ -z "$latest_ver" ]]; then
+        latest_ver="v2.6.0"
+        echo -e "${YELLOW}警告: 获取版本失败，将回退使用默认版本 ${latest_ver}${PLAIN}"
+    fi
     
     local dl_url="https://github.com/zhboner/realm/releases/download/${latest_ver}/realm-${realm_arch}.tar.gz"
-    echo -e "${CYAN}正在下载 Realm ${latest_ver}...${PLAIN}"
-    wget -qO /tmp/realm.tar.gz "$dl_url" || { echo -e "${RED}下载失败${PLAIN}"; return; }
+    echo -e "正在下载: ${GREEN}Realm ${latest_ver}${PLAIN}"
     
+    wget -qO /tmp/realm.tar.gz "$dl_url"
+    if [[ $? -ne 0 ]]; then
+        echo -e "${RED}下载失败，请检查服务器网络连通性！${PLAIN}"
+        sleep 2
+        return
+    fi
+
     systemctl stop realm 2>/dev/null
-    tar -xzf /tmp/realm.tar.gz -C /tmp/ && mv /tmp/realm "$REALM_BIN" && chmod +x "$REALM_BIN"
+    tar -xzf /tmp/realm.tar.gz -C /tmp/
+    mv /tmp/realm "$REALM_BIN"
+    chmod +x "$REALM_BIN"
     rm -f /tmp/realm.tar.gz
 
-    mkdir -p "$CONFIG_DIR"
-    [[ ! -f "$CONFIG_FILE" ]] && init_python_helper && python3 "$HELPER_PY" clear
+    init_env
+    generate_toml
 
     cat << EOF > "$SERVICE_FILE"
 [Unit]
-Description=Realm Service
-After=network.target
+Description=Realm Port Forwarding Service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$REALM_BIN -c $CONFIG_FILE
-Restart=always
-RestartSec=5
+User=root
 LimitNOFILE=65535
+ExecStart=$REALM_BIN -c $TOML_FILE
+Restart=on-failure
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload && systemctl enable realm && systemctl start realm
-    echo -e "${GREEN}✅ Realm 安装成功并已启动！${PLAIN}"
+
+    systemctl daemon-reload
+    systemctl enable realm >/dev/null 2>&1
+    systemctl start realm
+    
+    echo -e "${GREEN}✅ Realm ${latest_ver} 安装部署完毕！${PLAIN}"
     sleep 2
 }
 
 uninstall_realm() {
-    echo -e "${RED}警告: 卸载将清空所有配置！${PLAIN}"
-    read -p "确认卸载吗？(y/n): " confirm
-    if [[ "$confirm" == "y" ]]; then
-        systemctl stop realm && systemctl disable realm
+    echo -e "${RED}⚠️  警告: 此操作将彻底卸载 Realm 并清空所有转发规则！${PLAIN}"
+    read -p "确定要继续吗？(y/n): " confirm
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        systemctl stop realm 2>/dev/null
+        systemctl disable realm 2>/dev/null
         rm -rf "$REALM_BIN" "$SERVICE_FILE" "$CONFIG_DIR" "$PANEL_CMD"
-        echo -e "${GREEN}✅ 卸载完成。${PLAIN}"
+        systemctl daemon-reload
+        echo -e "${GREEN}✅ Realm 及所有配置文件已从系统中彻底清除！再见！${PLAIN}"
         exit 0
     fi
 }
 
 add_rule() {
-    echo -e "${CYAN}>>> 添加转发规则 (自动开启双栈监听)${PLAIN}"
-    read -p "请输入本地监听端口: " lp
-    [[ ! "$lp" =~ ^[0-9]+$ ]] && echo "无效端口" && return
-    read -p "请输入目标地址 (域名/IP): " ra
-    [[ -z "$ra" ]] && echo "地址不能为空" && return
-    if [[ "$ra" =~ : && ! "$ra" =~ ^\[ ]]; then ra="[$ra]"; fi
-    read -p "请输入目标端口: " rp
-    [[ ! "$rp" =~ ^[0-9]+$ ]] && echo "无效端口" && return
-
-    init_python_helper
-    python3 "$HELPER_PY" add "[::]:$lp" "$ra:$rp"
-    systemctl restart realm
-    echo -e "${GREEN}✅ 规则已添加并生效！${PLAIN}"
-    sleep 1
+    [[ ! -f "$REALM_BIN" ]] && echo -e "${RED}请先安装 Realm 核心！${PLAIN}" && sleep 1.5 && return
+    
+    echo -e "${CYAN}>>> 添加新的转发规则${PLAIN}"
+    echo -e "${YELLOW}提示: 底层将自动配置 [::] 双栈监听${PLAIN}"
+    
+    read -p "1. 本机监听端口 (如 10000): " l_port
+    if [[ ! "$l_port" =~ ^[0-9]+$ ]] || [ "$l_port" -lt 1 ] || [ "$l_port" -gt 65535 ]; then
+        echo -e "${RED}端口格式错误，必须为 1-65535 的数字！${PLAIN}"
+        sleep 1.5; return
+    fi
+    
+    # 查重检测
+    if grep -q "^${l_port} " "$RULE_FILE" 2>/dev/null; then
+        echo -e "${RED}错误: 本地监听端口 ${l_port} 已存在，请勿重复添加！${PLAIN}"
+        sleep 1.5; return
+    fi
+    
+    read -p "2. 目标地址 (域名 / IPv4 / IPv6): " r_addr
+    [[ -z "$r_addr" ]] && echo -e "${RED}目标地址不能为空！${PLAIN}" && sleep 1.5 && return
+    
+    # 自动处理 IPv6 括号
+    if [[ "$r_addr" =~ : && ! "$r_addr" =~ ^\[ ]]; then
+        r_addr="[$r_addr]"
+    fi
+    
+    read -p "3. 目标端口 (如 443): " r_port
+    if [[ ! "$r_port" =~ ^[0-9]+$ ]] || [ "$r_port" -lt 1 ] || [ "$r_port" -gt 65535 ]; then
+        echo -e "${RED}目标端口格式错误！${PLAIN}"
+        sleep 1.5; return
+    fi
+    
+    # 写入数据源
+    init_env
+    echo "$l_port $r_addr $r_port" >> "$RULE_FILE"
+    
+    apply_config
 }
 
 list_rules() {
-    init_python_helper
-    echo -e "\n${YELLOW}--- 当前转发规则 ---${PLAIN}"
-    local res=$(python3 "$HELPER_PY" list)
-    if [[ "$res" == "EMPTY" ]]; then
-        echo "暂无转发规则。"
+    [[ ! -f "$REALM_BIN" ]] && echo -e "${RED}请先安装 Realm 核心！${PLAIN}" && return
+    init_env
+    
+    echo -e "\n${CYAN}======================== 当前转发规则列表 ========================${PLAIN}"
+    if [[ ! -s "$RULE_FILE" ]]; then
+        echo -e "${YELLOW}暂无任何转发规则。${PLAIN}"
     else
-        printf "%-6s | %-20s | %-30s\n" "序号" "本地监听" "远程目标"
-        echo "------------------------------------------------------------"
-        echo "$res" | while IFS="@@" read -r idx listen remote; do
-            printf "${GREEN}%-4s${PLAIN} | ${YELLOW}%-18s${PLAIN} | ${CYAN}%-30s${PLAIN}\n" "[$idx]" "$listen" "$remote"
-        done
+        printf "${GREEN}%-6s | %-15s | %-30s${PLAIN}\n" "序号" "本地监听端口" "目标地址:端口"
+        echo "------------------------------------------------------------------"
+        # 利用 awk 精美排版输出
+        awk '{printf "[%-4s] | %-15s | %-30s\n", NR, $1, $2":"$3}' "$RULE_FILE"
     fi
+    echo -e "${CYAN}==================================================================${PLAIN}"
 }
 
 delete_rule() {
     list_rules
-    read -p "请输入要删除的规则序号 (回车取消): " idx
+    [[ ! -s "$RULE_FILE" ]] && sleep 1.5 && return
+    
+    read -p "请输入要删除的规则【序号】 (直接回车取消): " idx
     [[ -z "$idx" ]] && return
-    init_python_helper
-    python3 "$HELPER_PY" del "$idx"
-    systemctl restart realm
+    if [[ ! "$idx" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}请输入正确的数字序号！${PLAIN}"
+        sleep 1.5; return
+    fi
+    
+    local total_lines=$(wc -l < "$RULE_FILE")
+    if [ "$idx" -lt 1 ] || [ "$idx" -gt "$total_lines" ]; then
+        echo -e "${RED}序号不存在！${PLAIN}"
+        sleep 1.5; return
+    fi
+    
+    # 删除指定行
+    sed -i "${idx}d" "$RULE_FILE"
     echo -e "${GREEN}✅ 规则已删除！${PLAIN}"
-    sleep 1
+    apply_config
 }
 
-get_status() {
-    if [[ ! -f "$REALM_BIN" ]]; then echo -e "${RED}未安装${PLAIN}"
-    elif systemctl is-active --quiet realm; then echo -e "${GREEN}运行中${PLAIN}"
-    else echo -e "${YELLOW}已停止${PLAIN}"; fi
+clear_rules() {
+    echo -e "${RED}⚠️  警告: 此操作将清空所有转发规则！${PLAIN}"
+    read -p "确定要继续吗？(y/n): " confirm
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        > "$RULE_FILE"
+        apply_config
+        echo -e "${GREEN}✅ 所有规则已清空！${PLAIN}"
+        sleep 1.5
+    fi
 }
 
-# --- 主循环菜单 ---
+# --- 状态指示器 ---
+show_menu() {
+    clear
+    
+    # 获取详细状态
+    local realm_version="未安装"
+    local svc_status="${RED}■ 核心未安装${PLAIN}"
+    local rule_count="0"
+    
+    if [[ -f "$REALM_BIN" ]]; then
+        realm_version=$($REALM_BIN --version 2>/dev/null | awk '{print $2}')
+        [[ -z "$realm_version" ]] && realm_version="未知版本"
+        
+        if systemctl is-active --quiet realm; then
+            svc_status="${GREEN}▶ 正在运行${PLAIN}"
+        else
+            svc_status="${YELLOW}■ 已停止${PLAIN}"
+        fi
+        
+        [[ -f "$RULE_FILE" ]] && rule_count=$(wc -l < "$RULE_FILE" 2>/dev/null || echo 0)
+    fi
+
+    echo -e "
+${CYAN}#############################################################${PLAIN}
+${CYAN}#               Realm 专线中转面板 (v${sh_ver})               #${PLAIN}
+${CYAN}#############################################################${PLAIN}
+ 核心版本 : ${YELLOW}${realm_version}${PLAIN}
+ 运行状态 : ${svc_status}
+ 规则总数 : ${GREEN}${rule_count}${PLAIN} 条
+-------------------------------------------------------------
+ ${GREEN}1.${PLAIN} 安装 / 更新 Realm 核心
+ ${RED}2.${PLAIN} 彻底卸载 Realm 面板
+-------------------------------------------------------------
+ ${GREEN}3.${PLAIN} 添加转发规则 (原生双栈支持)
+ ${YELLOW}4.${PLAIN} 删除转发规则
+ ${YELLOW}5.${PLAIN} 清空全部规则
+ ${GREEN}6.${PLAIN} 查看规则列表
+-------------------------------------------------------------
+ ${CYAN}7.${PLAIN} 启动 Realm 服务
+ ${CYAN}8.${PLAIN} 停止 Realm 服务
+ ${CYAN}9.${PLAIN} 重启 Realm 服务
+ ${GREEN}10.${PLAIN}查看 Realm 运行日志
+ ${GREEN}0.${PLAIN} 退出面板
+${CYAN}#############################################################${PLAIN}"
+}
+
+# --- 主循环 ---
 main() {
-    check_dependencies
+    # 强制在 TTY 环境下运行
+    [[ ! -t 0 ]] && exec < /dev/tty
+    
     while true; do
-        clear
-        echo -e "
-${CYAN}################################################${PLAIN}
-${CYAN}#        Realm 专线中转面板 V${sh_ver}              #${PLAIN}
-${CYAN}################################################${PLAIN}
- 状态: $(get_status)
-------------------------------------------------
- ${GREEN}1.${PLAIN} 安装 / 更新 Realm
- ${RED}2.${PLAIN} 彻底卸载 Realm
-------------------------------------------------
- ${GREEN}3.${PLAIN} 添加转发规则
- ${GREEN}4.${PLAIN} 删除转发规则
- ${YELLOW}5.${PLAIN} 查看规则列表
-------------------------------------------------
- ${CYAN}6.${PLAIN} 重启服务
- ${CYAN}7.${PLAIN} 查看运行日志
- ${PLAIN}0. 退出面板
-------------------------------------------------"
-        read -p "请选择: " opt
+        show_menu
+        read -p "请输入数字选择 [0-10]: " opt
         case $opt in
             1) install_realm ;;
             2) uninstall_realm ;;
             3) add_rule ;;
             4) delete_rule ;;
-            5) list_rules; read -p "按回车返回..." ;;
-            6) systemctl restart realm; echo "服务已重启"; sleep 1 ;;
-            7) journalctl -u realm -n 30 --no-pager; read -p "按回车返回..." ;;
-            0) exit 0 ;;
-            *) echo "无效选项"; sleep 1 ;;
+            5) clear_rules ;;
+            6) list_rules; read -p "按回车键返回主菜单..." ;;
+            7) systemctl start realm; echo -e "${GREEN}服务已启动！${PLAIN}"; sleep 1 ;;
+            8) systemctl stop realm; echo -e "${GREEN}服务已停止！${PLAIN}"; sleep 1 ;;
+            9) systemctl restart realm; echo -e "${GREEN}服务已重启！${PLAIN}"; sleep 1 ;;
+            10) 
+               echo -e "${YELLOW}提示: 按 Ctrl+C 退出日志并返回主菜单。${PLAIN}"; sleep 1
+               trap 'echo -e "\n${GREEN}已退出日志。${PLAIN}"' INT; journalctl -u realm -n 30 -f; trap - INT 
+               ;;
+            0) echo -e "${GREEN}退出成功。随时输入 realm-panel 重新唤出面板。${PLAIN}"; exit 0 ;;
+            *) echo -e "${RED}无效的选择！${PLAIN}"; sleep 1 ;;
         esac
     done
 }
