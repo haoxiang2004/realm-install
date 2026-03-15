@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 智控面板 V3.6.0 (双端控制修复版)
-# 描述: 修复环境缺失 Bug，新增 Web 服务的启停控制
+# Realm 智控面板 V3.6.1 (逻辑自洽终极版)
+# 描述: 修复 Web 热更新崩溃问题，强化更新文件校验
 # ==========================================
 
 export LANG=en_US.UTF-8
-sh_ver="3.6.0"
+sh_ver="3.6.1"
 
 # --- 核心目录与文件 ---
 CONFIG_DIR="/etc/realm"
@@ -29,7 +29,7 @@ PLAIN="\033[0m"
 
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 用户运行！${PLAIN}" && exit 1
 
-# --- 核心环境初始化 (修复 V3.5 丢失的函数) ---
+# --- 核心环境初始化 ---
 init_env() {
     mkdir -p "$CONFIG_DIR"
     touch "$RULE_FILE"
@@ -410,6 +410,9 @@ if [[ "$1" == "update_web" ]]; then
     echo "WEB_PORT=$2" > "$WEB_CONF"
     echo "WEB_PASS=\"$3\"" >> "$WEB_CONF"
     source "$WEB_CONF"
+    
+    # 终端直接调用的配置修改，先停止服务再重写
+    systemctl stop realm-web 2>/dev/null
     install_web
     exit 0
 fi
@@ -509,18 +512,26 @@ update_system() {
 
     echo -e "${CYAN}正在拉取最新版面板代码...${PLAIN}"
     wget -qO /tmp/realm-panel.sh "$REPO_URL"
-    if [[ -s /tmp/realm-panel.sh ]]; then
+    
+    # 【安全防爆】校验拉下来的文件是否是一个合法的 bash 脚本，防止 404 报错直接覆盖导致面板报废
+    if grep -q "#!/bin/bash" /tmp/realm-panel.sh; then
+        
+        # 【先停服务再写文件】防止 Python 进程读取错乱导致 Web 异常
+        systemctl stop realm-web 2>/dev/null
+        
         cp /tmp/realm-panel.sh "$PANEL_CMD"
         chmod +x "$PANEL_CMD"
         if [[ "$0" != "$PANEL_CMD" ]]; then cp /tmp/realm-panel.sh "$0"; fi
         source "$WEB_CONF"
-        install_web
+        
+        install_web # 这里会重新生成 Python 脚本并 start realm-web
+        
         echo -e "${GREEN}✅ 面板已热更新成功！即将重新加载...${PLAIN}"
         sleep 1.5
         exec "$PANEL_CMD"
     else
-        echo -e "${RED}❌ 面板代码下载失败，请检查网络！${PLAIN}"
-        sleep 2
+        echo -e "${RED}❌ 面板代码拉取失败，返回了非预期的格式。请检查 GitHub 链接是否有效！${PLAIN}"
+        sleep 3
     fi
 }
 
