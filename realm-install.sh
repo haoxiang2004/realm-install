@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 智控面板 V3.4 (终极 OTA + 双栈网络自适应)
-# 描述: 自动显示 IPv4 / IPv6 Web 访问地址
+# Realm 智控面板 V3.5.0 (坚如磐石版)
+# 描述: 终端与 Web 双端严格输入校验与防冲突防御
 # ==========================================
 
 export LANG=en_US.UTF-8
-sh_ver="3.4.0"
+sh_ver="3.5.0"
 
 # --- 核心目录与文件 ---
 CONFIG_DIR="/etc/realm"
@@ -133,9 +133,9 @@ DASHBOARD_HTML = """
     <div class="card"><div class="card-body">
         <h5 class="card-title fw-bold">➕ 添加转发 (自带双栈)</h5>
         <div class="row g-2 mt-2">
-            <div class="col-md-3"><input type="number" id="lPort" class="form-control" placeholder="本地端口 (例: 10000)"></div>
+            <div class="col-md-3"><input type="number" id="lPort" class="form-control" placeholder="本地端口 (1-65535)"></div>
             <div class="col-md-5"><input type="text" id="rAddr" class="form-control" placeholder="目标地址 (域名/IPv4/IPv6)"></div>
-            <div class="col-md-3"><input type="number" id="rPort" class="form-control" placeholder="目标端口 (例: 443)"></div>
+            <div class="col-md-3"><input type="number" id="rPort" class="form-control" placeholder="目标端口 (1-65535)"></div>
             <div class="col-md-1"><button class="btn btn-success w-100 fw-bold" onclick="addRule()">添加</button></div>
         </div>
     </div></div>
@@ -154,8 +154,8 @@ DASHBOARD_HTML = """
 <div class="modal fade" id="settingModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
     <div class="modal-header"><h5 class="modal-title fw-bold">⚙️ Web 面板设置</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
     <div class="modal-body">
-        <div class="mb-3"><label class="form-label fw-bold">新 Web 端口</label><input type="number" id="newWebPort" class="form-control" placeholder="留空则不修改"></div>
-        <div class="mb-3"><label class="form-label fw-bold">新登录密码</label><input type="text" id="newWebPass" class="form-control" placeholder="留空则不修改"></div>
+        <div class="mb-3"><label class="form-label fw-bold">Web 端口</label><input type="number" id="newWebPort" class="form-control" value="{PORT}"></div>
+        <div class="mb-3"><label class="form-label fw-bold">登录密码</label><input type="text" id="newWebPass" class="form-control" value="{PASS}"></div>
     </div>
     <div class="modal-footer"><button class="btn btn-primary fw-bold" onclick="updateWeb()">保存并重启 Web</button></div>
 </div></div></div>
@@ -173,15 +173,24 @@ DASHBOARD_HTML = """
 <script>
     async function fetchApi(url, options={}) {
         const res = await fetch(url, options);
-        if(res.status === 401) window.location.reload();
+        if(res.status === 401) { window.location.reload(); return null; }
+        if(res.status === 400) {
+            const err = await res.json();
+            alert('❌ 验证失败: ' + err.msg);
+            return null;
+        }
         return res;
     }
     async function loadData() {
-        const stRes = await fetchApi('/api/status'); const st = await stRes.json();
+        const stRes = await fetchApi('/api/status'); 
+        if(!stRes) return;
+        const st = await stRes.json();
         const b = document.getElementById('statusBadge');
         if(st.active){ b.className='badge bg-success'; b.innerText='▶ 运行中'; }else{ b.className='badge bg-danger'; b.innerText='■ 已停止'; }
         
-        const res = await fetchApi('/api/list'); const rules = await res.json();
+        const res = await fetchApi('/api/list'); 
+        if(!res) return;
+        const rules = await res.json();
         let html = '';
         rules.forEach((r, i) => {
             html += `<tr><td>${i+1}</td><td><span class="badge bg-primary fs-6">[::]:${r.l}</span></td>
@@ -191,18 +200,24 @@ DASHBOARD_HTML = """
         document.getElementById('ruleTable').innerHTML = html || '<tr><td colspan="4" class="text-muted">暂无任何规则</td></tr>';
     }
     async function addRule() {
-        const l = document.getElementById('lPort').value, ra = document.getElementById('rAddr').value, rp = document.getElementById('rPort').value;
-        if(!l || !ra || !rp) return alert('参数不完整！');
-        await fetchApi('/api/add', {method:'POST', body:JSON.stringify({l,ra,rp})});
-        document.getElementById('lPort').value=''; document.getElementById('rAddr').value=''; document.getElementById('rPort').value='';
-        loadData();
+        const l = document.getElementById('lPort').value.trim();
+        const ra = document.getElementById('rAddr').value.trim();
+        const rp = document.getElementById('rPort').value.trim();
+        if(!l || !ra || !rp) return alert('请填写完整所有参数！');
+        
+        const res = await fetchApi('/api/add', {method:'POST', body:JSON.stringify({l,ra,rp})});
+        if(res) {
+            document.getElementById('lPort').value=''; document.getElementById('rAddr').value=''; document.getElementById('rPort').value='';
+            loadData();
+        }
     }
     async function delRule(id) {
         if(!confirm('确定删除？')) return;
         await fetchApi('/api/del', {method:'POST', body:JSON.stringify({id})}); loadData();
     }
     async function apiAction(url, msg) {
-        await fetchApi(url, {method:'POST'}); alert(msg); loadData();
+        const res = await fetchApi(url, {method:'POST'}); 
+        if(res) { alert(msg); loadData(); }
     }
     async function showModal(id) {
         if(id === 'configModal'){
@@ -215,16 +230,23 @@ DASHBOARD_HTML = """
         new bootstrap.Modal(document.getElementById(id)).show();
     }
     async function updateWeb() {
-        const port = document.getElementById('newWebPort').value;
-        const pwd = document.getElementById('newWebPass').value;
-        if(!port && !pwd) return alert('没有任何修改！');
+        const portNode = document.getElementById('newWebPort');
+        const passNode = document.getElementById('newWebPass');
+        const port = portNode.value.trim();
+        const pwd = passNode.value.trim();
+        
+        if(port == portNode.defaultValue && pwd == passNode.defaultValue) return alert('您没有任何修改哦！');
+        if(!port || !pwd) return alert('端口和密码不能为空！');
+        
         if(confirm('修改后 Web 面板将自动重启。如果修改了端口，你需要手动调整浏览器地址。确定吗？')){
-            fetchApi('/api/setting', {method:'POST', body:JSON.stringify({port, pwd})});
-            alert('指令已发送！面板即将重启...');
-            setTimeout(() => {
-                if(port) window.location.href = window.location.protocol + '//' + window.location.hostname + ':' + port;
-                else window.location.reload();
-            }, 3000);
+            const res = await fetchApi('/api/setting', {method:'POST', body:JSON.stringify({port, pwd})});
+            if(res) {
+                alert('✅ 指令已发送！面板即将重启...');
+                setTimeout(() => {
+                    if(port != portNode.defaultValue) window.location.href = window.location.protocol + '//' + window.location.hostname + ':' + port;
+                    else window.location.reload();
+                }, 3000);
+            }
         }
     }
     async function logout() { await fetch('/api/logout', {method:'POST'}); window.location.reload(); }
@@ -237,6 +259,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def send_json(self, data):
         self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
         self.wfile.write(json.dumps(data).encode('utf-8'))
+    def send_error_msg(self, msg):
+        self.send_response(400); self.send_header('Content-type', 'application/json'); self.end_headers()
+        self.wfile.write(json.dumps({"status":"error", "msg": msg}).encode('utf-8'))
     def send_text(self, text):
         self.send_response(200); self.send_header('Content-type', 'text/plain; charset=utf-8'); self.end_headers()
         self.wfile.write(text.encode('utf-8'))
@@ -248,8 +273,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/':
             self.send_response(200); self.send_header('Content-type', 'text/html; charset=utf-8'); self.end_headers()
-            self.wfile.write((DASHBOARD_HTML if self.check_auth() else LOGIN_HTML).encode('utf-8'))
+            if self.check_auth():
+                html = DASHBOARD_HTML.replace('{PORT}', str(PORT)).replace('{PASS}', PASS.replace('"', '&quot;'))
+            else:
+                html = LOGIN_HTML
+            self.wfile.write(html.encode('utf-8'))
             return
+            
         if not self.check_auth(): self.send_response(401); self.end_headers(); return
             
         if self.path == '/api/list':
@@ -293,11 +323,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self.check_auth(): self.send_response(401); self.end_headers(); return
 
         if self.path == '/api/add':
-            ra = data['ra']
+            # --- Web 后端严格校验 ---
+            try:
+                l_port = int(data.get('l', 0))
+                r_port = int(data.get('rp', 0))
+                if not (1 <= l_port <= 65535 and 1 <= r_port <= 65535):
+                    return self.send_error_msg("本地端口和目标端口必须在 1~65535 之间！")
+            except:
+                return self.send_error_msg("端口必须是纯数字！")
+            
+            ra = str(data.get('ra', '')).strip()
+            if not ra or " " in ra:
+                return self.send_error_msg("目标地址不能为空且不能包含空格！")
+                
+            # 查重检测 (防止同一本地端口重复)
+            l_str = str(l_port)
+            if os.path.exists(RULE_FILE):
+                with open(RULE_FILE, 'r') as f:
+                    for line in f:
+                        if line.startswith(l_str + " "):
+                            return self.send_error_msg(f"本地监听端口 {l_str} 已存在，请勿重复添加！")
+
             if ':' in ra and not ra.startswith('['): ra = f"[{ra}]"
-            with open(RULE_FILE, 'a') as f: f.write(f"{data['l']} {ra} {data['rp']}\n")
+            with open(RULE_FILE, 'a') as f: f.write(f"{l_str} {ra} {str(r_port)}\n")
             subprocess.run(['/usr/local/bin/realm-panel', 'sync'])
             self.send_json({"status":"ok"})
+            
         elif self.path == '/api/del':
             idx = int(data['id'])
             if os.path.exists(RULE_FILE):
@@ -307,14 +358,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     with open(RULE_FILE, 'w') as f: f.writelines(lines)
             subprocess.run(['/usr/local/bin/realm-panel', 'sync'])
             self.send_json({"status":"ok"})
+            
         elif self.path == '/api/restart':
             subprocess.run(['systemctl', 'restart', 'realm'])
             self.send_json({"status":"ok"})
+            
         elif self.path == '/api/setting':
-            n_port = data.get('port') or str(PORT)
-            n_pass = data.get('pwd') or PASS
+            # --- Web 设置后台严格校验 ---
+            try:
+                n_port = int(data.get('port', 0))
+                if not (1 <= n_port <= 65535):
+                    return self.send_error_msg("Web 端口必须在 1~65535 之间！")
+            except:
+                return self.send_error_msg("端口必须是纯数字！")
+                
+            n_pass = str(data.get('pwd', '')).strip()
+            if not n_pass or " " in n_pass:
+                return self.send_error_msg("密码不能为空且不能包含空格！")
+
             self.send_json({"status":"ok"})
-            subprocess.Popen(['/usr/local/bin/realm-panel', 'update_web', n_port, n_pass])
+            subprocess.Popen(['/usr/local/bin/realm-panel', 'update_web', str(n_port), n_pass])
 
 with socketserver.ThreadingTCPServer(("", PORT), Handler) as httpd:
     httpd.serve_forever()
@@ -351,7 +414,6 @@ if [[ "$1" == "update_web" ]]; then
     exit 0
 fi
 
-# 注册自身
 if [ "$0" != "$PANEL_CMD" ]; then
     cp "$0" "$PANEL_CMD" 2>/dev/null
     chmod +x "$PANEL_CMD" 2>/dev/null
@@ -407,7 +469,6 @@ EOF
         echo -e "\n${CYAN}🎉 部署全部完成！${PLAIN}"
         echo -e "===================================================="
         
-        # 显示双栈 IP
         [[ -n "$PUBLIC_IPV4" ]] && echo -e "🌐 IPv4 访问 : ${GREEN}http://${PUBLIC_IPV4}:${WEB_PORT}${PLAIN}"
         [[ -n "$PUBLIC_IPV6" ]] && echo -e "🌐 IPv6 访问 : ${GREEN}http://[${PUBLIC_IPV6}]:${WEB_PORT}${PLAIN}"
         [[ -z "$PUBLIC_IPV4" && -z "$PUBLIC_IPV6" ]] && echo -e "🌐 Web 访问 : ${GREEN}http://<服务器IP>:${WEB_PORT}${PLAIN}"
@@ -449,8 +510,9 @@ update_system() {
     echo -e "${CYAN}正在拉取最新版面板代码...${PLAIN}"
     wget -qO /tmp/realm-panel.sh "$REPO_URL"
     if [[ -s /tmp/realm-panel.sh ]]; then
-        mv /tmp/realm-panel.sh "$PANEL_CMD"
+        cp /tmp/realm-panel.sh "$PANEL_CMD"
         chmod +x "$PANEL_CMD"
+        if [[ "$0" != "$PANEL_CMD" ]]; then cp /tmp/realm-panel.sh "$0"; fi
         source "$WEB_CONF"
         install_web
         echo -e "${GREEN}✅ 面板已热更新成功！即将重新加载...${PLAIN}"
@@ -474,14 +536,25 @@ uninstall_realm() {
 }
 
 add_rule() {
-    read -p "1. 本机监听端口: " l_port
-    [[ ! "$l_port" =~ ^[0-9]+$ ]] && return
-    if grep -q "^${l_port} " "$RULE_FILE" 2>/dev/null; then echo -e "${RED}端口已存在！${PLAIN}" && sleep 1.5 && return; fi
-    read -p "2. 目标地址 (域名/IP): " r_addr
-    [[ -z "$r_addr" ]] && return
+    # --- 终端严格校验 ---
+    read -p "1. 本机监听端口 (1-65535): " l_port
+    if [[ ! "$l_port" =~ ^[0-9]+$ ]] || [ "$l_port" -lt 1 ] || [ "$l_port" -gt 65535 ]; then
+        echo -e "${RED}❌ 端口格式错误！必须是 1-65535 之间的数字。${PLAIN}"; sleep 1.5; return
+    fi
+    if grep -q "^${l_port} " "$RULE_FILE" 2>/dev/null; then 
+        echo -e "${RED}❌ 端口已被占用，请勿重复添加！${PLAIN}"; sleep 1.5; return
+    fi
+    
+    read -p "2. 目标地址 (域名/IP, 禁空格): " r_addr
+    if [[ -z "$r_addr" || "$r_addr" =~ [[:space:]] ]]; then
+        echo -e "${RED}❌ 目标地址不能为空且不能包含空格！${PLAIN}"; sleep 1.5; return
+    fi
     if [[ "$r_addr" =~ : && ! "$r_addr" =~ ^\[ ]]; then r_addr="[$r_addr]"; fi
-    read -p "3. 目标端口: " r_port
-    [[ ! "$r_port" =~ ^[0-9]+$ ]] && return
+    
+    read -p "3. 目标端口 (1-65535): " r_port
+    if [[ ! "$r_port" =~ ^[0-9]+$ ]] || [ "$r_port" -lt 1 ] || [ "$r_port" -gt 65535 ]; then
+        echo -e "${RED}❌ 目标端口格式错误！${PLAIN}"; sleep 1.5; return
+    fi
     
     init_env
     echo "$l_port $r_addr $r_port" >> "$RULE_FILE"
@@ -501,6 +574,7 @@ delete_rule() {
     list_rules
     read -p "请输入要删除的序号 (回车取消): " idx
     [[ -z "$idx" ]] && return
+    if [[ ! "$idx" =~ ^[0-9]+$ ]]; then echo -e "${RED}❌ 序号必须是数字！${PLAIN}"; sleep 1.5; return; fi
     sed -i "${idx}d" "$RULE_FILE"
     apply_config
 }
@@ -513,10 +587,21 @@ clear_rules() {
 config_web() {
     echo -e "${CYAN}>>> 修改 Web 面板配置${PLAIN}"
     echo -e "当前端口: ${GREEN}${WEB_PORT}${PLAIN} | 当前密码: ${GREEN}${WEB_PASS}${PLAIN}"
-    read -p "请输入新端口 (直接回车保持不变): " n_port
-    read -p "请输入新密码 (直接回车保持不变): " n_pass
     
-    [[ -z "$n_port" ]] && n_port=$WEB_PORT
+    # --- 终端面板设置严格校验 ---
+    read -p "请输入新 Web 端口 (直接回车保持不变): " n_port
+    if [[ -n "$n_port" ]]; then
+        if [[ ! "$n_port" =~ ^[0-9]+$ ]] || [ "$n_port" -lt 1 ] || [ "$n_port" -gt 65535 ]; then
+            echo -e "${RED}❌ Web 端口格式错误！必须是 1-65535 之间的数字。${PLAIN}"; sleep 1.5; return
+        fi
+    else
+        n_port=$WEB_PORT
+    fi
+    
+    read -p "请输入新登录密码 (直接回车保持不变): " n_pass
+    if [[ -n "$n_pass" && "$n_pass" =~ [[:space:]] ]]; then
+        echo -e "${RED}❌ 密码不能包含空格！${PLAIN}"; sleep 1.5; return
+    fi
     [[ -z "$n_pass" ]] && n_pass=$WEB_PASS
     
     "$PANEL_CMD" update_web "$n_port" "$n_pass"
@@ -538,7 +623,6 @@ show_menu() {
         [[ -f "$RULE_FILE" ]] && rule_count=$(wc -l < "$RULE_FILE" 2>/dev/null || echo 0)
     fi
     
-    # 构建双栈 Web 显示字符串
     if systemctl is-active --quiet realm-web; then
         web_str=" ${GREEN}运行中${PLAIN}"
         [[ -n "$PUBLIC_IPV4" ]] && web_str+="\n IPv4 面板 : ${GREEN}http://${PUBLIC_IPV4}:${WEB_PORT}${PLAIN}"
@@ -575,7 +659,6 @@ ${CYAN}#############################################################${PLAIN}"
 main() {
     [[ ! -t 0 ]] && exec < /dev/tty
     
-    # 启动时探测双栈 IP (带 2 秒超时，防止卡顿)
     echo -e "${CYAN}正在检测服务器网络环境...${PLAIN}"
     PUBLIC_IPV4=$(curl -s4m2 icanhazip.com || curl -s4m2 ifconfig.me)
     PUBLIC_IPV6=$(curl -s6m2 icanhazip.com || curl -s6m2 ifconfig.me)
