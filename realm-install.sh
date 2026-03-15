@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 智控面板 V3.2 (双控配置完全体)
-# 描述: 终端 11 项全功能 + Web 在线改端口/密码
+# Realm 智控面板 V3.3 (终极 OTA 双端热更版)
+# 描述: 终端 11 项全功能 + Web 在线配置 + 面板自更新
 # ==========================================
 
 export LANG=en_US.UTF-8
-sh_ver="3.2.0"
+sh_ver="3.3.0"
 
 # --- 核心目录与文件 ---
 CONFIG_DIR="/etc/realm"
@@ -19,6 +19,7 @@ REALM_BIN="/usr/local/bin/realm"
 SERVICE_FILE="/etc/systemd/system/realm.service"
 WEB_PY="/usr/local/bin/realm-web.py"
 WEB_SERVICE="/etc/systemd/system/realm-web.service"
+REPO_URL="https://raw.githubusercontent.com/haoxiang2004/realm-install/main/realm-install.sh"
 
 RED="\033[31m"
 GREEN="\033[32m"
@@ -416,10 +417,50 @@ EOF
 # ==========================================
 # 终端 TUI 功能函数
 # ==========================================
-install_realm() {
-    auto_install
-    echo -e "${GREEN}核心组件检查完毕！${PLAIN}"
-    sleep 1.5
+update_system() {
+    echo -e "${CYAN}>>> 开始更新 Realm 核心与面板...${PLAIN}"
+    
+    # 1. 更新 Realm 核心
+    local arch=$(uname -m)
+    case "$arch" in
+        x86_64) realm_arch="x86_64-unknown-linux-gnu" ;;
+        aarch64|arm64) realm_arch="aarch64-unknown-linux-gnu" ;;
+        *) echo -e "${RED}不支持的架构: $arch${PLAIN}"; sleep 2; return ;;
+    esac
+    local latest_ver=$(curl -s https://api.github.com/repos/zhboner/realm/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    [[ -z "$latest_ver" ]] && latest_ver="v2.6.0"
+    local dl_url="https://github.com/zhboner/realm/releases/download/${latest_ver}/realm-${realm_arch}.tar.gz"
+    
+    echo -e "正在拉取 Realm 核心 ${latest_ver}..."
+    wget -qO /tmp/realm.tar.gz "$dl_url"
+    if [[ -f /tmp/realm.tar.gz ]]; then
+        systemctl stop realm 2>/dev/null
+        tar -xzf /tmp/realm.tar.gz -C /tmp/ && mv /tmp/realm "$REALM_BIN" && chmod +x "$REALM_BIN"
+        rm -f /tmp/realm.tar.gz
+        systemctl start realm
+        echo -e "${GREEN}✅ Realm 核心已更新至 ${latest_ver}${PLAIN}"
+    else
+        echo -e "${RED}❌ Realm 核心下载失败${PLAIN}"
+    fi
+
+    # 2. 更新面板脚本与 Web 后端
+    echo -e "${CYAN}正在拉取最新版面板代码...${PLAIN}"
+    wget -qO /tmp/realm-panel.sh "$REPO_URL"
+    if [[ -s /tmp/realm-panel.sh ]]; then
+        mv /tmp/realm-panel.sh "$PANEL_CMD"
+        chmod +x "$PANEL_CMD"
+        
+        # 同步更新 Web 界面并重载
+        source "$WEB_CONF"
+        install_web
+        
+        echo -e "${GREEN}✅ 面板已热更新成功！即将重新加载...${PLAIN}"
+        sleep 1.5
+        exec "$PANEL_CMD" # 热重载跳出当前进程
+    else
+        echo -e "${RED}❌ 面板代码下载失败，请检查网络！${PLAIN}"
+        sleep 2
+    fi
 }
 
 uninstall_realm() {
@@ -509,7 +550,7 @@ ${CYAN}#############################################################${PLAIN}
  规则总数 : ${GREEN}${rule_count}${PLAIN} 条
  Web 面板 : ${web_status}
 -------------------------------------------------------------
- ${GREEN}1.${PLAIN} 安装 / 更新 Realm 核心
+ ${GREEN}1.${PLAIN} 更新 Realm 核心与管理面板 ${YELLOW}(OTA 升级)${PLAIN}
  ${RED}2.${PLAIN} 彻底卸载 Realm 面板
 -------------------------------------------------------------
  ${GREEN}3.${PLAIN} 添加转发规则 (原生双栈支持)
@@ -535,7 +576,7 @@ main() {
         show_menu
         read -p "请输入数字选择 [0-11]: " opt
         case $opt in
-            1) install_realm ;;
+            1) update_system ;;
             2) uninstall_realm ;;
             3) add_rule ;;
             4) delete_rule ;;
