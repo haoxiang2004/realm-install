@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 智控面板 V3.0 (全自动化 + 全功能 Web)
+# Realm 智控面板 V3.1 (终端满血版 + 全自动 Web)
 # 默认 Web 端口: 8081 | 默认密码: 123456
 # ==========================================
 
 export LANG=en_US.UTF-8
-sh_ver="3.0.0"
+sh_ver="3.1.0"
 
-# --- 全局默认配置 ---
+# --- 全局 Web 配置 ---
 WEB_PORT=8081
 WEB_PASS="123456"
 
@@ -64,62 +64,21 @@ init_env() {
     touch "$RULE_FILE"
 }
 
-# ==========================================
-# 安装核心组件 (Realm)
-# ==========================================
-install_realm_core() {
-    echo -e "${CYAN}[1/3] 正在自动部署 Realm 核心组件...${PLAIN}"
-    local arch=$(uname -m)
-    case "$arch" in
-        x86_64) realm_arch="x86_64-unknown-linux-gnu" ;;
-        aarch64|arm64) realm_arch="aarch64-unknown-linux-gnu" ;;
-        *) echo -e "${RED}不支持的架构: $arch${PLAIN}"; exit 1 ;;
-    esac
-
-    local latest_ver=$(curl -s https://api.github.com/repos/zhboner/realm/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    [[ -z "$latest_ver" ]] && latest_ver="v2.6.0"
-    
-    local dl_url="https://github.com/zhboner/realm/releases/download/${latest_ver}/realm-${realm_arch}.tar.gz"
-    wget -qO /tmp/realm.tar.gz "$dl_url"
-    
-    systemctl stop realm 2>/dev/null
-    tar -xzf /tmp/realm.tar.gz -C /tmp/ && mv /tmp/realm "$REALM_BIN" && chmod +x "$REALM_BIN"
-    rm -f /tmp/realm.tar.gz
-
-    init_env
+apply_config() {
     "$PANEL_CMD" sync
-
-    cat << EOF > "$SERVICE_FILE"
-[Unit]
-Description=Realm Port Forwarding Service
-After=network-online.target
-[Service]
-Type=simple
-User=root
-LimitNOFILE=65535
-ExecStart=$REALM_BIN -c $TOML_FILE
-Restart=on-failure
-RestartSec=5s
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload && systemctl enable realm >/dev/null 2>&1
-    systemctl start realm
+    echo -e "${GREEN}✅ 配置已生成，Realm 服务已热重启生效！${PLAIN}"
+    sleep 1.5
 }
 
 # ==========================================
-# 部署全功能 Web 面板
+# 自动部署 Web 控制台 (核心逻辑)
 # ==========================================
-install_web_core() {
-    echo -e "${CYAN}[2/3] 正在生成高颜值 Web 控制台...${PLAIN}"
-
-    # 注入动态变量
+install_web() {
     cat << EOF > "$WEB_PY"
 PORT = $WEB_PORT
 PASS = "$WEB_PASS"
 EOF
 
-    # 写入纯 Python 无依赖 Web 服务器核心代码
     cat << 'EOF' >> "$WEB_PY"
 import http.server, socketserver, json, os, subprocess, hashlib
 
@@ -134,7 +93,6 @@ LOGIN_HTML = """
     <style>
         body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); height: 100vh; display: flex; align-items: center; justify-content: center; }
         .card { border-radius: 15px; box-shadow: 0 15px 35px rgba(0,0,0,0.2); border: none; padding: 2rem; width: 100%; max-width: 400px; background: rgba(255,255,255,0.95); }
-        .form-control:focus { box-shadow: none; border-color: #667eea; }
     </style>
 </head><body>
     <div class="card">
@@ -161,7 +119,7 @@ DASHBOARD_HTML = """
 </head><body>
 <nav class="navbar navbar-dark bg-dark mb-4 shadow-sm">
     <div class="container d-flex justify-content-between">
-        <span class="navbar-brand fw-bold">🚀 Realm 智控中心 V3.0</span>
+        <span class="navbar-brand fw-bold">🚀 Realm 智控中心</span>
         <button class="btn btn-outline-light btn-sm" onclick="logout()">安全退出</button>
     </div>
 </nav>
@@ -216,11 +174,10 @@ DASHBOARD_HTML = """
         return res;
     }
     async function loadData() {
-        // 状态
         const stRes = await fetchApi('/api/status'); const st = await stRes.json();
         const b = document.getElementById('statusBadge');
         if(st.active){ b.className='badge bg-success'; b.innerText='▶ 运行中'; }else{ b.className='badge bg-danger'; b.innerText='■ 已停止'; }
-        // 规则表
+        
         const res = await fetchApi('/api/list'); const rules = await res.json();
         let html = '';
         rules.forEach((r, i) => {
@@ -278,7 +235,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(200); self.send_header('Content-type', 'text/html; charset=utf-8'); self.end_headers()
             self.wfile.write((DASHBOARD_HTML if self.check_auth() else LOGIN_HTML).encode('utf-8'))
             return
-        
         if not self.check_auth(): self.send_response(401); self.end_headers(); return
             
         if self.path == '/api/list':
@@ -362,80 +318,205 @@ EOF
 }
 
 # ==========================================
-# 自动化执行入口
+# 自动探测与部署核心 (Realm)
 # ==========================================
 auto_install() {
-    # 如果没安装，则执行全自动静默部署
     if [[ ! -f "$REALM_BIN" || ! -f "$WEB_PY" ]]; then
         clear
         echo -e "${CYAN}====================================================${PLAIN}"
         echo -e "${YELLOW} 检测到首次运行，正在全自动部署 Realm 与 Web 环境...${PLAIN}"
         echo -e "${CYAN}====================================================${PLAIN}"
         
-        # 安装基础依赖
         apt-get update -yqq && apt-get install -yqq python3 wget curl tar 2>/dev/null || yum install -y python3 wget curl tar 2>/dev/null
         
-        install_realm_core
-        install_web_core
+        # 安装 Realm 核心
+        local arch=$(uname -m)
+        case "$arch" in
+            x86_64) realm_arch="x86_64-unknown-linux-gnu" ;;
+            aarch64|arm64) realm_arch="aarch64-unknown-linux-gnu" ;;
+            *) echo -e "${RED}不支持的架构: $arch${PLAIN}"; exit 1 ;;
+        esac
+        local latest_ver=$(curl -s https://api.github.com/repos/zhboner/realm/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        [[ -z "$latest_ver" ]] && latest_ver="v2.6.0"
+        local dl_url="https://github.com/zhboner/realm/releases/download/${latest_ver}/realm-${realm_arch}.tar.gz"
+        wget -qO /tmp/realm.tar.gz "$dl_url"
+        tar -xzf /tmp/realm.tar.gz -C /tmp/ && mv /tmp/realm "$REALM_BIN" && chmod +x "$REALM_BIN"
+        rm -f /tmp/realm.tar.gz
+
+        init_env
+        "$PANEL_CMD" sync
+
+        cat << EOF > "$SERVICE_FILE"
+[Unit]
+Description=Realm Port Forwarding Service
+After=network-online.target
+[Service]
+Type=simple
+User=root
+LimitNOFILE=65535
+ExecStart=$REALM_BIN -c $TOML_FILE
+Restart=on-failure
+RestartSec=5s
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload && systemctl enable realm >/dev/null 2>&1
+        systemctl start realm
+        
+        # 安装 Web
+        install_web
         
         local public_ip=$(curl -s ifconfig.me)
-        echo -e "\n${CYAN}[3/3] 🎉 部署全部完成！${PLAIN}"
+        echo -e "\n${CYAN}🎉 部署全部完成！${PLAIN}"
         echo -e "===================================================="
         echo -e "🌐 Web 管理地址 : ${GREEN}http://${public_ip}:${WEB_PORT}${PLAIN}"
-        echo -e "🔑 Web 登录密码 : ${YELLOW}${WEB_PASS}${PLAIN}   (仅密码，无用户名)"
+        echo -e "🔑 Web 登录密码 : ${YELLOW}${WEB_PASS}${PLAIN}   (单密码无用户)"
         echo -e "⚠️ 请务必在云服务器防火墙放行 ${WEB_PORT} 端口！"
         echo -e "====================================================\n"
-        read -p "按回车键进入终端面板..."
+        read -p "按回车键进入原版终端菜单..."
     fi
 }
 
-get_status() {
-    if systemctl is-active --quiet realm; then echo -e "${GREEN}运行中${PLAIN}"
-    else echo -e "${RED}已停止${PLAIN}"; fi
+# ==========================================
+# 恢复的原版终端菜单逻辑
+# ==========================================
+install_realm() {
+    # 仅提供手动覆盖更新
+    auto_install
+    echo -e "${GREEN}Realm 核心已是最新或已成功重装！${PLAIN}"
+    sleep 1.5
 }
 
-# --- 终端面板备用 UI ---
+uninstall_realm() {
+    echo -e "${RED}⚠️  警告: 此操作将彻底卸载 Realm、Web 面板 并清空规则！${PLAIN}"
+    read -p "确定要继续吗？(y/n): " confirm
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        systemctl stop realm realm-web 2>/dev/null
+        systemctl disable realm realm-web 2>/dev/null
+        rm -rf "$REALM_BIN" "$SERVICE_FILE" "$CONFIG_DIR" "$PANEL_CMD" "$WEB_PY" "$WEB_SERVICE"
+        systemctl daemon-reload
+        echo -e "${GREEN}✅ Realm 及相关组件已全部清除！再见！${PLAIN}"
+        exit 0
+    fi
+}
+
+add_rule() {
+    echo -e "${CYAN}>>> 添加新的转发规则${PLAIN}"
+    read -p "1. 本机监听端口 (如 10000): " l_port
+    [[ ! "$l_port" =~ ^[0-9]+$ ]] && echo -e "${RED}端口格式错误！${PLAIN}" && sleep 1.5 && return
+    if grep -q "^${l_port} " "$RULE_FILE" 2>/dev/null; then echo -e "${RED}本地端口已存在！${PLAIN}" && sleep 1.5 && return; fi
+    read -p "2. 目标地址 (域名 / IPv4 / IPv6): " r_addr
+    [[ -z "$r_addr" ]] && return
+    if [[ "$r_addr" =~ : && ! "$r_addr" =~ ^\[ ]]; then r_addr="[$r_addr]"; fi
+    read -p "3. 目标端口 (如 443): " r_port
+    [[ ! "$r_port" =~ ^[0-9]+$ ]] && return
+    
+    init_env
+    echo "$l_port $r_addr $r_port" >> "$RULE_FILE"
+    apply_config
+}
+
+list_rules() {
+    init_env
+    echo -e "\n${CYAN}======================== 当前转发规则列表 ========================${PLAIN}"
+    if [[ ! -s "$RULE_FILE" ]]; then
+        echo -e "${YELLOW}暂无任何转发规则。${PLAIN}"
+    else
+        printf "${GREEN}%-6s | %-15s | %-30s${PLAIN}\n" "序号" "本地监听端口" "目标地址:端口"
+        echo "------------------------------------------------------------------"
+        awk '{printf "[%-4s] | %-15s | %-30s\n", NR, $1, $2":"$3}' "$RULE_FILE"
+    fi
+    echo -e "${CYAN}==================================================================${PLAIN}"
+    echo -e "\n${YELLOW}>>> config.toml 配置文件原始内容 <<<${PLAIN}"
+    echo -e "------------------------------------------------------------------"
+    [[ -f "$TOML_FILE" ]] && cat "$TOML_FILE" || echo -e "${RED}配置文件暂未生成。${PLAIN}"
+    echo -e "------------------------------------------------------------------\n"
+}
+
+delete_rule() {
+    list_rules
+    [[ ! -s "$RULE_FILE" ]] && sleep 1.5 && return
+    read -p "请输入要删除的规则【序号】 (直接回车取消): " idx
+    [[ -z "$idx" ]] && return
+    sed -i "${idx}d" "$RULE_FILE"
+    echo -e "${GREEN}✅ 规则已删除！${PLAIN}"
+    apply_config
+}
+
+clear_rules() {
+    read -p "确定清空所有规则吗？(y/n): " confirm
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        > "$RULE_FILE"
+        apply_config
+    fi
+}
+
+show_menu() {
+    clear
+    local realm_version="未安装"
+    local svc_status="${RED}■ 核心未安装${PLAIN}"
+    local rule_count="0"
+    local web_status="${RED}■ Web 异常${PLAIN}"
+    
+    if [[ -f "$REALM_BIN" ]]; then
+        realm_version=$($REALM_BIN --version 2>/dev/null | awk '{print $2}')
+        [[ -z "$realm_version" ]] && realm_version="未知"
+        if systemctl is-active --quiet realm; then svc_status="${GREEN}▶ 运行中${PLAIN}"; else svc_status="${YELLOW}■ 已停止${PLAIN}"; fi
+        [[ -f "$RULE_FILE" ]] && rule_count=$(wc -l < "$RULE_FILE" 2>/dev/null || echo 0)
+    fi
+    if systemctl is-active --quiet realm-web; then web_status="${GREEN}运行中 (端口: ${WEB_PORT})${PLAIN}"; fi
+
+    echo -e "
+${CYAN}#############################################################${PLAIN}
+${CYAN}#               Realm 专线中转面板 (v${sh_ver})               #${PLAIN}
+${CYAN}#############################################################${PLAIN}
+ 核心版本 : ${YELLOW}${realm_version}${PLAIN}
+ 运行状态 : ${svc_status}
+ 规则总数 : ${GREEN}${rule_count}${PLAIN} 条
+ Web 面板 : ${web_status}
+-------------------------------------------------------------
+ ${GREEN}1.${PLAIN} 安装 / 更新 Realm 核心
+ ${RED}2.${PLAIN} 彻底卸载 Realm 面板
+-------------------------------------------------------------
+ ${GREEN}3.${PLAIN} 添加转发规则 (原生双栈支持)
+ ${YELLOW}4.${PLAIN} 删除转发规则
+ ${YELLOW}5.${PLAIN} 清空全部规则
+ ${GREEN}6.${PLAIN} 查看规则列表与底层配置
+-------------------------------------------------------------
+ ${CYAN}7.${PLAIN} 启动 Realm 服务
+ ${CYAN}8.${PLAIN} 停止 Realm 服务
+ ${CYAN}9.${PLAIN} 重启 Realm 服务
+ ${GREEN}10.${PLAIN}查看 Realm 运行日志
+ ${GREEN}0.${PLAIN} 退出面板
+${CYAN}#############################################################${PLAIN}"
+}
+
 main() {
     [[ ! -t 0 ]] && exec < /dev/tty
-    auto_install # 触发全自动检测与安装
     
+    # 检测环境并全自动安装
+    auto_install
+    
+    # 启动原版终端主循环
     while true; do
-        clear
-        local rule_count="0"
-        [[ -f "$RULE_FILE" ]] && rule_count=$(wc -l < "$RULE_FILE" 2>/dev/null)
-        
-        echo -e "
-${CYAN}#############################################################${PLAIN}
-${CYAN}#               Realm 智控面板 V${sh_ver} (终端版)              #${PLAIN}
-${CYAN}#############################################################${PLAIN}
- 转发核心 : $(get_status)    |   规则总数 : ${GREEN}${rule_count}${PLAIN}
- Web 面板 : ${GREEN}运行中 (端口: ${WEB_PORT})${PLAIN}
--------------------------------------------------------------
- 提示: 我们强烈建议您使用 Web 浏览器进行可视化操作！
- 若 Web 面板无法访问，请检查服务器的安全组和防火墙设置。
--------------------------------------------------------------
- ${CYAN}1.${PLAIN} 重装 / 更新 Realm 核心代码
- ${CYAN}2.${PLAIN} 修改 Web 端口或密码 (将重新生成)
- ${RED}3.${PLAIN} 彻底卸载 Realm 与 Web 面板
--------------------------------------------------------------
- ${GREEN}0.${PLAIN} 退出终端
-${CYAN}#############################################################${PLAIN}"
-        read -p "请选择操作 [0-3]: " opt
+        show_menu
+        read -p "请输入数字选择 [0-10]: " opt
         case $opt in
-            1) install_realm_core; echo "更新完成"; sleep 1 ;;
-            2) 
-               read -p "新 Web 端口: " WEB_PORT
-               read -p "新 Web 密码: " WEB_PASS
-               install_web_core; read -p "按回车返回..." ;;
-            3) 
-               read -p "确定彻底卸载吗？(y/n): " confirm
-               if [[ "$confirm" == "y" ]]; then
-                   systemctl stop realm realm-web; systemctl disable realm realm-web
-                   rm -rf "$REALM_BIN" "$SERVICE_FILE" "$CONFIG_DIR" "$PANEL_CMD" "$WEB_PY" "$WEB_SERVICE"
-                   echo -e "${GREEN}卸载完毕！${PLAIN}"; exit 0
-               fi ;;
-            0) exit 0 ;;
-            *) sleep 1 ;;
+            1) install_realm ;;
+            2) uninstall_realm ;;
+            3) add_rule ;;
+            4) delete_rule ;;
+            5) clear_rules ;;
+            6) list_rules; read -p "按回车键返回主菜单..." ;;
+            7) systemctl start realm; echo -e "${GREEN}服务已启动！${PLAIN}"; sleep 1 ;;
+            8) systemctl stop realm; echo -e "${GREEN}服务已停止！${PLAIN}"; sleep 1 ;;
+            9) systemctl restart realm; echo -e "${GREEN}服务已重启！${PLAIN}"; sleep 1 ;;
+            10) 
+               echo -e "${YELLOW}提示: 按 Ctrl+C 退出日志并返回主菜单。${PLAIN}"; sleep 1
+               trap 'echo -e "\n${GREEN}已退出日志。${PLAIN}"' INT; journalctl -u realm -n 30 -f; trap - INT 
+               ;;
+            0) echo -e "${GREEN}退出成功。随时输入 realm-panel 重新唤出面板。${PLAIN}"; exit 0 ;;
+            *) echo -e "${RED}无效的选择！${PLAIN}"; sleep 1 ;;
         esac
     done
 }
