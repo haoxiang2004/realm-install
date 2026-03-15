@@ -1,21 +1,19 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 智控面板 V3.1 (终端满血版 + 全自动 Web)
-# 默认 Web 端口: 8081 | 默认密码: 123456
+# Realm 智控面板 V3.2 (双控配置完全体)
+# 描述: 终端 11 项全功能 + Web 在线改端口/密码
 # ==========================================
 
 export LANG=en_US.UTF-8
-sh_ver="3.1.0"
-
-# --- 全局 Web 配置 ---
-WEB_PORT=8081
-WEB_PASS="123456"
+sh_ver="3.2.0"
 
 # --- 核心目录与文件 ---
 CONFIG_DIR="/etc/realm"
 TOML_FILE="${CONFIG_DIR}/config.toml"
 RULE_FILE="${CONFIG_DIR}/rules.txt"
+WEB_CONF="${CONFIG_DIR}/web.conf"
+
 PANEL_CMD="/usr/local/bin/realm-panel"
 REALM_BIN="/usr/local/bin/realm"
 SERVICE_FILE="/etc/systemd/system/realm.service"
@@ -30,8 +28,22 @@ PLAIN="\033[0m"
 
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 用户运行！${PLAIN}" && exit 1
 
-# --- API 同步接口 (给 Web 后端调用的静默指令) ---
-if [[ "$1" == "sync" ]]; then
+# --- 加载或初始化 Web 配置 ---
+if [[ -f "$WEB_CONF" ]]; then
+    source "$WEB_CONF"
+else
+    WEB_PORT=8081
+    WEB_PASS="123456"
+    mkdir -p "$CONFIG_DIR"
+    echo "WEB_PORT=$WEB_PORT" > "$WEB_CONF"
+    echo "WEB_PASS=\"$WEB_PASS\"" >> "$WEB_CONF"
+fi
+
+# ==========================================
+# 核心功能模块 (供 API 和命令行调用)
+# ==========================================
+
+sync_realm() {
     cat <<EOF > "$TOML_FILE"
 [network]
 no_tcp = false
@@ -50,29 +62,8 @@ EOF
         done < "$RULE_FILE"
     fi
     systemctl restart realm
-    exit 0
-fi
-
-# 注册全局命令
-if [ "$0" != "$PANEL_CMD" ]; then
-    cp "$0" "$PANEL_CMD" 2>/dev/null
-    chmod +x "$PANEL_CMD" 2>/dev/null
-fi
-
-init_env() {
-    mkdir -p "$CONFIG_DIR"
-    touch "$RULE_FILE"
 }
 
-apply_config() {
-    "$PANEL_CMD" sync
-    echo -e "${GREEN}✅ 配置已生成，Realm 服务已热重启生效！${PLAIN}"
-    sleep 1.5
-}
-
-# ==========================================
-# 自动部署 Web 控制台 (核心逻辑)
-# ==========================================
 install_web() {
     cat << EOF > "$WEB_PY"
 PORT = $WEB_PORT
@@ -120,7 +111,10 @@ DASHBOARD_HTML = """
 <nav class="navbar navbar-dark bg-dark mb-4 shadow-sm">
     <div class="container d-flex justify-content-between">
         <span class="navbar-brand fw-bold">🚀 Realm 智控中心</span>
-        <button class="btn btn-outline-light btn-sm" onclick="logout()">安全退出</button>
+        <div>
+            <button class="btn btn-outline-info btn-sm me-2" onclick="showModal('settingModal')">⚙️ 面板设置</button>
+            <button class="btn btn-outline-light btn-sm" onclick="logout()">安全退出</button>
+        </div>
     </div>
 </nav>
 <div class="container">
@@ -156,11 +150,19 @@ DASHBOARD_HTML = """
     </div></div>
 </div>
 
+<div class="modal fade" id="settingModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
+    <div class="modal-header"><h5 class="modal-title fw-bold">⚙️ Web 面板设置</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">
+        <div class="mb-3"><label class="form-label fw-bold">新 Web 端口</label><input type="number" id="newWebPort" class="form-control" placeholder="留空则不修改"></div>
+        <div class="mb-3"><label class="form-label fw-bold">新登录密码</label><input type="text" id="newWebPass" class="form-control" placeholder="留空则不修改"></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-primary fw-bold" onclick="updateWeb()">保存并重启 Web</button></div>
+</div></div></div>
+
 <div class="modal fade" id="configModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content">
     <div class="modal-header"><h5 class="modal-title fw-bold">📄 config.toml 源码</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
     <div class="modal-body"><pre id="configContent">加载中...</pre></div>
 </div></div></div>
-
 <div class="modal fade" id="logModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content">
     <div class="modal-header"><h5 class="modal-title fw-bold">📝 Realm 最新运行日志</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
     <div class="modal-body"><pre id="logContent">加载中...</pre></div>
@@ -211,6 +213,19 @@ DASHBOARD_HTML = """
         }
         new bootstrap.Modal(document.getElementById(id)).show();
     }
+    async function updateWeb() {
+        const port = document.getElementById('newWebPort').value;
+        const pwd = document.getElementById('newWebPass').value;
+        if(!port && !pwd) return alert('没有任何修改！');
+        if(confirm('修改后 Web 面板将自动重启。如果修改了端口，你需要手动调整浏览器地址。确定吗？')){
+            fetchApi('/api/setting', {method:'POST', body:JSON.stringify({port, pwd})});
+            alert('指令已发送！面板即将重启...');
+            setTimeout(() => {
+                if(port) window.location.href = window.location.protocol + '//' + window.location.hostname + ':' + port;
+                else window.location.reload();
+            }, 3000);
+        }
+    }
     async function logout() { await fetch('/api/logout', {method:'POST'}); window.location.reload(); }
     window.onload = loadData;
 </script>
@@ -227,8 +242,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         
     def check_auth(self):
         cookie = self.headers.get('Cookie', '')
-        if f"auth={TOKEN}" in cookie: return True
-        return False
+        return f"auth={TOKEN}" in cookie
 
     def do_GET(self):
         if self.path == '/':
@@ -251,7 +265,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except: pass
             self.send_json({"active": act})
         elif self.path == '/api/config':
-            txt = "配置文件未找到。"
+            txt = "未生成"
             if os.path.exists(CONF_FILE):
                 with open(CONF_FILE, 'r') as f: txt = f.read()
             self.send_text(txt)
@@ -295,6 +309,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == '/api/restart':
             subprocess.run(['systemctl', 'restart', 'realm'])
             self.send_json({"status":"ok"})
+        elif self.path == '/api/setting':
+            n_port = data.get('port') or str(PORT)
+            n_pass = data.get('pwd') or PASS
+            self.send_json({"status":"ok"})
+            subprocess.Popen(['/usr/local/bin/realm-panel', 'update_web', n_port, n_pass])
 
 with socketserver.ThreadingTCPServer(("", PORT), Handler) as httpd:
     httpd.serve_forever()
@@ -317,8 +336,28 @@ EOF
     systemctl restart realm-web
 }
 
+# --- 接收 API 与终端触发的命令 ---
+if [[ "$1" == "sync" ]]; then
+    sync_realm
+    exit 0
+fi
+
+if [[ "$1" == "update_web" ]]; then
+    echo "WEB_PORT=$2" > "$WEB_CONF"
+    echo "WEB_PASS=\"$3\"" >> "$WEB_CONF"
+    source "$WEB_CONF"
+    install_web
+    exit 0
+fi
+
+# 注册自身
+if [ "$0" != "$PANEL_CMD" ]; then
+    cp "$0" "$PANEL_CMD" 2>/dev/null
+    chmod +x "$PANEL_CMD" 2>/dev/null
+fi
+
 # ==========================================
-# 自动探测与部署核心 (Realm)
+# 自动部署检测
 # ==========================================
 auto_install() {
     if [[ ! -f "$REALM_BIN" || ! -f "$WEB_PY" ]]; then
@@ -329,7 +368,6 @@ auto_install() {
         
         apt-get update -yqq && apt-get install -yqq python3 wget curl tar 2>/dev/null || yum install -y python3 wget curl tar 2>/dev/null
         
-        # 安装 Realm 核心
         local arch=$(uname -m)
         case "$arch" in
             x86_64) realm_arch="x86_64-unknown-linux-gnu" ;;
@@ -344,7 +382,7 @@ auto_install() {
         rm -f /tmp/realm.tar.gz
 
         init_env
-        "$PANEL_CMD" sync
+        sync_realm
 
         cat << EOF > "$SERVICE_FILE"
 [Unit]
@@ -363,52 +401,46 @@ EOF
         systemctl daemon-reload && systemctl enable realm >/dev/null 2>&1
         systemctl start realm
         
-        # 安装 Web
         install_web
         
         local public_ip=$(curl -s ifconfig.me)
         echo -e "\n${CYAN}🎉 部署全部完成！${PLAIN}"
         echo -e "===================================================="
         echo -e "🌐 Web 管理地址 : ${GREEN}http://${public_ip}:${WEB_PORT}${PLAIN}"
-        echo -e "🔑 Web 登录密码 : ${YELLOW}${WEB_PASS}${PLAIN}   (单密码无用户)"
-        echo -e "⚠️ 请务必在云服务器防火墙放行 ${WEB_PORT} 端口！"
+        echo -e "🔑 Web 登录密码 : ${YELLOW}${WEB_PASS}${PLAIN}   (仅密码验证)"
         echo -e "====================================================\n"
-        read -p "按回车键进入原版终端菜单..."
+        read -p "按回车键进入终端面板..."
     fi
 }
 
 # ==========================================
-# 恢复的原版终端菜单逻辑
+# 终端 TUI 功能函数
 # ==========================================
 install_realm() {
-    # 仅提供手动覆盖更新
     auto_install
-    echo -e "${GREEN}Realm 核心已是最新或已成功重装！${PLAIN}"
+    echo -e "${GREEN}核心组件检查完毕！${PLAIN}"
     sleep 1.5
 }
 
 uninstall_realm() {
-    echo -e "${RED}⚠️  警告: 此操作将彻底卸载 Realm、Web 面板 并清空规则！${PLAIN}"
-    read -p "确定要继续吗？(y/n): " confirm
+    read -p "危险：确定要彻底卸载 Realm 面板并清空规则吗？(y/n): " confirm
     if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
         systemctl stop realm realm-web 2>/dev/null
         systemctl disable realm realm-web 2>/dev/null
         rm -rf "$REALM_BIN" "$SERVICE_FILE" "$CONFIG_DIR" "$PANEL_CMD" "$WEB_PY" "$WEB_SERVICE"
         systemctl daemon-reload
-        echo -e "${GREEN}✅ Realm 及相关组件已全部清除！再见！${PLAIN}"
-        exit 0
+        echo -e "${GREEN}✅ 彻底卸载完毕！${PLAIN}"; exit 0
     fi
 }
 
 add_rule() {
-    echo -e "${CYAN}>>> 添加新的转发规则${PLAIN}"
-    read -p "1. 本机监听端口 (如 10000): " l_port
-    [[ ! "$l_port" =~ ^[0-9]+$ ]] && echo -e "${RED}端口格式错误！${PLAIN}" && sleep 1.5 && return
-    if grep -q "^${l_port} " "$RULE_FILE" 2>/dev/null; then echo -e "${RED}本地端口已存在！${PLAIN}" && sleep 1.5 && return; fi
-    read -p "2. 目标地址 (域名 / IPv4 / IPv6): " r_addr
+    read -p "1. 本机监听端口: " l_port
+    [[ ! "$l_port" =~ ^[0-9]+$ ]] && return
+    if grep -q "^${l_port} " "$RULE_FILE" 2>/dev/null; then echo -e "${RED}端口已存在！${PLAIN}" && sleep 1.5 && return; fi
+    read -p "2. 目标地址 (域名/IP): " r_addr
     [[ -z "$r_addr" ]] && return
     if [[ "$r_addr" =~ : && ! "$r_addr" =~ ^\[ ]]; then r_addr="[$r_addr]"; fi
-    read -p "3. 目标端口 (如 443): " r_port
+    read -p "3. 目标端口: " r_port
     [[ ! "$r_port" =~ ^[0-9]+$ ]] && return
     
     init_env
@@ -418,37 +450,39 @@ add_rule() {
 
 list_rules() {
     init_env
-    echo -e "\n${CYAN}======================== 当前转发规则列表 ========================${PLAIN}"
-    if [[ ! -s "$RULE_FILE" ]]; then
-        echo -e "${YELLOW}暂无任何转发规则。${PLAIN}"
-    else
-        printf "${GREEN}%-6s | %-15s | %-30s${PLAIN}\n" "序号" "本地监听端口" "目标地址:端口"
-        echo "------------------------------------------------------------------"
-        awk '{printf "[%-4s] | %-15s | %-30s\n", NR, $1, $2":"$3}' "$RULE_FILE"
-    fi
-    echo -e "${CYAN}==================================================================${PLAIN}"
-    echo -e "\n${YELLOW}>>> config.toml 配置文件原始内容 <<<${PLAIN}"
-    echo -e "------------------------------------------------------------------"
-    [[ -f "$TOML_FILE" ]] && cat "$TOML_FILE" || echo -e "${RED}配置文件暂未生成。${PLAIN}"
-    echo -e "------------------------------------------------------------------\n"
+    echo -e "\n${CYAN}======================== 当前转发规则 ========================${PLAIN}"
+    if [[ ! -s "$RULE_FILE" ]]; then echo -e "${YELLOW}暂无任何规则。${PLAIN}"
+    else awk '{printf "[%-4s] | %-15s | %-30s\n", NR, $1, $2":"$3}' "$RULE_FILE"; fi
+    echo -e "\n${YELLOW}>>> config.toml 配置文件源码 <<<${PLAIN}"
+    [[ -f "$TOML_FILE" ]] && cat "$TOML_FILE" || echo "未生成"
 }
 
 delete_rule() {
     list_rules
-    [[ ! -s "$RULE_FILE" ]] && sleep 1.5 && return
-    read -p "请输入要删除的规则【序号】 (直接回车取消): " idx
+    read -p "请输入要删除的序号 (回车取消): " idx
     [[ -z "$idx" ]] && return
     sed -i "${idx}d" "$RULE_FILE"
-    echo -e "${GREEN}✅ 规则已删除！${PLAIN}"
     apply_config
 }
 
 clear_rules() {
-    read -p "确定清空所有规则吗？(y/n): " confirm
-    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-        > "$RULE_FILE"
-        apply_config
-    fi
+    read -p "确定清空吗？(y/n): " confirm
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then > "$RULE_FILE"; apply_config; fi
+}
+
+config_web() {
+    echo -e "${CYAN}>>> 修改 Web 面板配置${PLAIN}"
+    echo -e "当前端口: ${GREEN}${WEB_PORT}${PLAIN} | 当前密码: ${GREEN}${WEB_PASS}${PLAIN}"
+    read -p "请输入新端口 (直接回车保持不变): " n_port
+    read -p "请输入新密码 (直接回车保持不变): " n_pass
+    
+    [[ -z "$n_port" ]] && n_port=$WEB_PORT
+    [[ -z "$n_pass" ]] && n_pass=$WEB_PASS
+    
+    # 调起自身参数更新 Web
+    "$PANEL_CMD" update_web "$n_port" "$n_pass"
+    echo -e "${GREEN}✅ Web 面板配置已更新并重启！${PLAIN}"
+    sleep 1.5
 }
 
 show_menu() {
@@ -456,7 +490,7 @@ show_menu() {
     local realm_version="未安装"
     local svc_status="${RED}■ 核心未安装${PLAIN}"
     local rule_count="0"
-    local web_status="${RED}■ Web 异常${PLAIN}"
+    local web_status="${RED}■ 异常${PLAIN}"
     
     if [[ -f "$REALM_BIN" ]]; then
         realm_version=$($REALM_BIN --version 2>/dev/null | awk '{print $2}')
@@ -487,36 +521,33 @@ ${CYAN}#############################################################${PLAIN}
  ${CYAN}8.${PLAIN} 停止 Realm 服务
  ${CYAN}9.${PLAIN} 重启 Realm 服务
  ${GREEN}10.${PLAIN}查看 Realm 运行日志
+-------------------------------------------------------------
+ ${YELLOW}11.${PLAIN}配置 Web 面板 ${CYAN}(修改端口/密码)${PLAIN}
  ${GREEN}0.${PLAIN} 退出面板
 ${CYAN}#############################################################${PLAIN}"
 }
 
 main() {
     [[ ! -t 0 ]] && exec < /dev/tty
-    
-    # 检测环境并全自动安装
     auto_install
     
-    # 启动原版终端主循环
     while true; do
         show_menu
-        read -p "请输入数字选择 [0-10]: " opt
+        read -p "请输入数字选择 [0-11]: " opt
         case $opt in
             1) install_realm ;;
             2) uninstall_realm ;;
             3) add_rule ;;
             4) delete_rule ;;
             5) clear_rules ;;
-            6) list_rules; read -p "按回车键返回主菜单..." ;;
+            6) list_rules; read -p "按回车键返回..." ;;
             7) systemctl start realm; echo -e "${GREEN}服务已启动！${PLAIN}"; sleep 1 ;;
             8) systemctl stop realm; echo -e "${GREEN}服务已停止！${PLAIN}"; sleep 1 ;;
             9) systemctl restart realm; echo -e "${GREEN}服务已重启！${PLAIN}"; sleep 1 ;;
-            10) 
-               echo -e "${YELLOW}提示: 按 Ctrl+C 退出日志并返回主菜单。${PLAIN}"; sleep 1
-               trap 'echo -e "\n${GREEN}已退出日志。${PLAIN}"' INT; journalctl -u realm -n 30 -f; trap - INT 
-               ;;
-            0) echo -e "${GREEN}退出成功。随时输入 realm-panel 重新唤出面板。${PLAIN}"; exit 0 ;;
-            *) echo -e "${RED}无效的选择！${PLAIN}"; sleep 1 ;;
+            10) trap 'echo -e "\n已退出";' INT; journalctl -u realm -n 30 -f; trap - INT ;;
+            11) config_web ;;
+            0) echo -e "${GREEN}随时输入 realm-panel 唤出面板。${PLAIN}"; exit 0 ;;
+            *) sleep 1 ;;
         esac
     done
 }
