@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 智控面板 V3.5.0 (坚如磐石版)
-# 描述: 终端与 Web 双端严格输入校验与防冲突防御
+# Realm 智控面板 V3.6.0 (双端控制修复版)
+# 描述: 修复环境缺失 Bug，新增 Web 服务的启停控制
 # ==========================================
 
 export LANG=en_US.UTF-8
-sh_ver="3.5.0"
+sh_ver="3.6.0"
 
 # --- 核心目录与文件 ---
 CONFIG_DIR="/etc/realm"
@@ -29,13 +29,19 @@ PLAIN="\033[0m"
 
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 用户运行！${PLAIN}" && exit 1
 
+# --- 核心环境初始化 (修复 V3.5 丢失的函数) ---
+init_env() {
+    mkdir -p "$CONFIG_DIR"
+    touch "$RULE_FILE"
+}
+
 # --- 加载或初始化 Web 配置 ---
 if [[ -f "$WEB_CONF" ]]; then
     source "$WEB_CONF"
 else
     WEB_PORT=8081
     WEB_PASS="123456"
-    mkdir -p "$CONFIG_DIR"
+    init_env
     echo "WEB_PORT=$WEB_PORT" > "$WEB_CONF"
     echo "WEB_PASS=\"$WEB_PASS\"" >> "$WEB_CONF"
 fi
@@ -62,7 +68,8 @@ remote = "${r_addr}:${r_port}"
 EOF
         done < "$RULE_FILE"
     fi
-    systemctl restart realm
+    # 屏蔽安装期间服务还未注册时的报错
+    systemctl restart realm 2>/dev/null || true
 }
 
 install_web() {
@@ -323,7 +330,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self.check_auth(): self.send_response(401); self.end_headers(); return
 
         if self.path == '/api/add':
-            # --- Web 后端严格校验 ---
             try:
                 l_port = int(data.get('l', 0))
                 r_port = int(data.get('rp', 0))
@@ -333,16 +339,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send_error_msg("端口必须是纯数字！")
             
             ra = str(data.get('ra', '')).strip()
-            if not ra or " " in ra:
-                return self.send_error_msg("目标地址不能为空且不能包含空格！")
+            if not ra or " " in ra: return self.send_error_msg("目标地址不能为空且不能包含空格！")
                 
-            # 查重检测 (防止同一本地端口重复)
             l_str = str(l_port)
             if os.path.exists(RULE_FILE):
                 with open(RULE_FILE, 'r') as f:
                     for line in f:
-                        if line.startswith(l_str + " "):
-                            return self.send_error_msg(f"本地监听端口 {l_str} 已存在，请勿重复添加！")
+                        if line.startswith(l_str + " "): return self.send_error_msg(f"本地监听端口 {l_str} 已存在！")
 
             if ':' in ra and not ra.startswith('['): ra = f"[{ra}]"
             with open(RULE_FILE, 'a') as f: f.write(f"{l_str} {ra} {str(r_port)}\n")
@@ -364,17 +367,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json({"status":"ok"})
             
         elif self.path == '/api/setting':
-            # --- Web 设置后台严格校验 ---
             try:
                 n_port = int(data.get('port', 0))
-                if not (1 <= n_port <= 65535):
-                    return self.send_error_msg("Web 端口必须在 1~65535 之间！")
+                if not (1 <= n_port <= 65535): return self.send_error_msg("Web 端口必须在 1~65535 之间！")
             except:
                 return self.send_error_msg("端口必须是纯数字！")
                 
             n_pass = str(data.get('pwd', '')).strip()
-            if not n_pass or " " in n_pass:
-                return self.send_error_msg("密码不能为空且不能包含空格！")
+            if not n_pass or " " in n_pass: return self.send_error_msg("密码不能为空且不能包含空格！")
 
             self.send_json({"status":"ok"})
             subprocess.Popen(['/usr/local/bin/realm-panel', 'update_web', str(n_port), n_pass])
@@ -429,6 +429,7 @@ auto_install() {
         echo -e "${YELLOW} 检测到首次运行，正在全自动部署 Realm 与 Web 环境...${PLAIN}"
         echo -e "${CYAN}====================================================${PLAIN}"
         
+        init_env
         apt-get update -yqq && apt-get install -yqq python3 wget curl tar 2>/dev/null || yum install -y python3 wget curl tar 2>/dev/null
         
         local arch=$(uname -m)
@@ -444,7 +445,6 @@ auto_install() {
         tar -xzf /tmp/realm.tar.gz -C /tmp/ && mv /tmp/realm "$REALM_BIN" && chmod +x "$REALM_BIN"
         rm -f /tmp/realm.tar.gz
 
-        init_env
         sync_realm
 
         cat << EOF > "$SERVICE_FILE"
@@ -536,7 +536,6 @@ uninstall_realm() {
 }
 
 add_rule() {
-    # --- 终端严格校验 ---
     read -p "1. 本机监听端口 (1-65535): " l_port
     if [[ ! "$l_port" =~ ^[0-9]+$ ]] || [ "$l_port" -lt 1 ] || [ "$l_port" -gt 65535 ]; then
         echo -e "${RED}❌ 端口格式错误！必须是 1-65535 之间的数字。${PLAIN}"; sleep 1.5; return
@@ -558,7 +557,9 @@ add_rule() {
     
     init_env
     echo "$l_port $r_addr $r_port" >> "$RULE_FILE"
-    apply_config
+    sync_realm
+    echo -e "${GREEN}✅ 规则已添加，服务已重启生效！${PLAIN}"
+    sleep 1.5
 }
 
 list_rules() {
@@ -576,19 +577,25 @@ delete_rule() {
     [[ -z "$idx" ]] && return
     if [[ ! "$idx" =~ ^[0-9]+$ ]]; then echo -e "${RED}❌ 序号必须是数字！${PLAIN}"; sleep 1.5; return; fi
     sed -i "${idx}d" "$RULE_FILE"
-    apply_config
+    sync_realm
+    echo -e "${GREEN}✅ 规则已删除！${PLAIN}"
+    sleep 1.5
 }
 
 clear_rules() {
     read -p "确定清空吗？(y/n): " confirm
-    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then > "$RULE_FILE"; apply_config; fi
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then 
+        > "$RULE_FILE"
+        sync_realm
+        echo -e "${GREEN}✅ 所有规则已清空！${PLAIN}"
+        sleep 1.5
+    fi
 }
 
 config_web() {
     echo -e "${CYAN}>>> 修改 Web 面板配置${PLAIN}"
     echo -e "当前端口: ${GREEN}${WEB_PORT}${PLAIN} | 当前密码: ${GREEN}${WEB_PASS}${PLAIN}"
     
-    # --- 终端面板设置严格校验 ---
     read -p "请输入新 Web 端口 (直接回车保持不变): " n_port
     if [[ -n "$n_port" ]]; then
         if [[ ! "$n_port" =~ ^[0-9]+$ ]] || [ "$n_port" -lt 1 ] || [ "$n_port" -gt 65535 ]; then
@@ -646,12 +653,10 @@ ${CYAN}#############################################################${PLAIN}
  ${YELLOW}5.${PLAIN} 清空全部规则
  ${GREEN}6.${PLAIN} 查看规则列表与底层配置
 -------------------------------------------------------------
- ${CYAN}7.${PLAIN} 启动 Realm 服务
- ${CYAN}8.${PLAIN} 停止 Realm 服务
- ${CYAN}9.${PLAIN} 重启 Realm 服务
- ${GREEN}10.${PLAIN}查看 Realm 运行日志
+ ${CYAN}7.${PLAIN} 启动 Realm   ${CYAN}8.${PLAIN} 停止 Realm   ${CYAN}9.${PLAIN} 重启 Realm
+ ${CYAN}10.${PLAIN}启动 Web     ${CYAN}11.${PLAIN}停止 Web     ${CYAN}12.${PLAIN}重启 Web
 -------------------------------------------------------------
- ${YELLOW}11.${PLAIN}配置 Web 面板 ${CYAN}(修改端口/密码)${PLAIN}
+ ${GREEN}13.${PLAIN}查看 Realm 运行日志       ${YELLOW}14.${PLAIN}配置 Web 面板
  ${GREEN}0.${PLAIN} 退出面板
 ${CYAN}#############################################################${PLAIN}"
 }
@@ -667,7 +672,7 @@ main() {
     
     while true; do
         show_menu
-        read -p "请输入数字选择 [0-11]: " opt
+        read -p "请输入数字选择 [0-14]: " opt
         case $opt in
             1) update_system ;;
             2) uninstall_realm ;;
@@ -675,11 +680,14 @@ main() {
             4) delete_rule ;;
             5) clear_rules ;;
             6) list_rules; read -p "按回车键返回..." ;;
-            7) systemctl start realm; echo -e "${GREEN}服务已启动！${PLAIN}"; sleep 1 ;;
-            8) systemctl stop realm; echo -e "${GREEN}服务已停止！${PLAIN}"; sleep 1 ;;
-            9) systemctl restart realm; echo -e "${GREEN}服务已重启！${PLAIN}"; sleep 1 ;;
-            10) trap 'echo -e "\n已退出";' INT; journalctl -u realm -n 30 -f; trap - INT ;;
-            11) config_web ;;
+            7) systemctl start realm; echo -e "${GREEN}Realm 服务已启动！${PLAIN}"; sleep 1 ;;
+            8) systemctl stop realm; echo -e "${GREEN}Realm 服务已停止！${PLAIN}"; sleep 1 ;;
+            9) systemctl restart realm; echo -e "${GREEN}Realm 服务已重启！${PLAIN}"; sleep 1 ;;
+            10) systemctl start realm-web; echo -e "${GREEN}Web 面板已启动！${PLAIN}"; sleep 1 ;;
+            11) systemctl stop realm-web; echo -e "${GREEN}Web 面板已停止！${PLAIN}"; sleep 1 ;;
+            12) systemctl restart realm-web; echo -e "${GREEN}Web 面板已重启！${PLAIN}"; sleep 1 ;;
+            13) trap 'echo -e "\n已退出";' INT; journalctl -u realm -n 30 -f; trap - INT ;;
+            14) config_web ;;
             0) echo -e "${GREEN}随时输入 realm-panel 唤出面板。${PLAIN}"; exit 0 ;;
             *) sleep 1 ;;
         esac
