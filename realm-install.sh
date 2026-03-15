@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 终极管理面板 (V1.0 - 重构稳定版)
+# Realm 终极管理面板 (V1.0.2 - 增强显示版)
 # 描述: 专为 Realm 打造的自动化部署与 TUI 管理工具
 # ==========================================
 
 export LANG=en_US.UTF-8
-sh_ver="1.0.1"
+sh_ver="1.0.2"
 
 # --- 核心目录与文件 ---
 CONFIG_DIR="/etc/realm"
@@ -43,7 +43,6 @@ init_env() {
 }
 
 # --- 核心引擎：从文本生成 TOML ---
-# 将用户的规则列表，100% 无损转换为 TOML 格式
 generate_toml() {
     cat <<EOF > "$TOML_FILE"
 [network]
@@ -54,7 +53,6 @@ EOF
     
     if [[ -s "$RULE_FILE" ]]; then
         while read -r l_port r_addr r_port; do
-            # 过滤空行或异常行
             [[ -z "$l_port" || -z "$r_addr" || -z "$r_port" ]] && continue
             
             cat <<EOF >> "$TOML_FILE"
@@ -80,7 +78,6 @@ apply_config() {
 }
 
 # --- 功能模块 ---
-
 install_realm() {
     echo -e "${YELLOW}>>> 开始安装/更新 Realm 核心组件...${PLAIN}"
     
@@ -168,7 +165,6 @@ add_rule() {
         sleep 1.5; return
     fi
     
-    # 查重检测
     if grep -q "^${l_port} " "$RULE_FILE" 2>/dev/null; then
         echo -e "${RED}错误: 本地监听端口 ${l_port} 已存在，请勿重复添加！${PLAIN}"
         sleep 1.5; return
@@ -177,7 +173,6 @@ add_rule() {
     read -p "2. 目标地址 (域名 / IPv4 / IPv6): " r_addr
     [[ -z "$r_addr" ]] && echo -e "${RED}目标地址不能为空！${PLAIN}" && sleep 1.5 && return
     
-    # 自动处理 IPv6 括号
     if [[ "$r_addr" =~ : && ! "$r_addr" =~ ^\[ ]]; then
         r_addr="[$r_addr]"
     fi
@@ -188,7 +183,6 @@ add_rule() {
         sleep 1.5; return
     fi
     
-    # 写入数据源
     init_env
     echo "$l_port $r_addr $r_port" >> "$RULE_FILE"
     
@@ -205,10 +199,19 @@ list_rules() {
     else
         printf "${GREEN}%-6s | %-15s | %-30s${PLAIN}\n" "序号" "本地监听端口" "目标地址:端口"
         echo "------------------------------------------------------------------"
-        # 利用 awk 精美排版输出
         awk '{printf "[%-4s] | %-15s | %-30s\n", NR, $1, $2":"$3}' "$RULE_FILE"
     fi
     echo -e "${CYAN}==================================================================${PLAIN}"
+    
+    # === 新增：展示 TOML 原始配置内容 ===
+    echo -e "\n${YELLOW}>>> config.toml 配置文件原始内容 <<<${PLAIN}"
+    echo -e "------------------------------------------------------------------"
+    if [[ -f "$TOML_FILE" ]]; then
+        cat "$TOML_FILE"
+    else
+        echo -e "${RED}配置文件暂未生成。${PLAIN}"
+    fi
+    echo -e "------------------------------------------------------------------\n"
 }
 
 delete_rule() {
@@ -228,7 +231,6 @@ delete_rule() {
         sleep 1.5; return
     fi
     
-    # 删除指定行
     sed -i "${idx}d" "$RULE_FILE"
     echo -e "${GREEN}✅ 规则已删除！${PLAIN}"
     apply_config
@@ -245,11 +247,8 @@ clear_rules() {
     fi
 }
 
-# --- 状态指示器 ---
 show_menu() {
     clear
-    
-    # 获取详细状态
     local realm_version="未安装"
     local svc_status="${RED}■ 核心未安装${PLAIN}"
     local rule_count="0"
@@ -281,7 +280,7 @@ ${CYAN}#############################################################${PLAIN}
  ${GREEN}3.${PLAIN} 添加转发规则 (原生双栈支持)
  ${YELLOW}4.${PLAIN} 删除转发规则
  ${YELLOW}5.${PLAIN} 清空全部规则
- ${GREEN}6.${PLAIN} 查看规则列表
+ ${GREEN}6.${PLAIN} 查看规则列表与底层配置
 -------------------------------------------------------------
  ${CYAN}7.${PLAIN} 启动 Realm 服务
  ${CYAN}8.${PLAIN} 停止 Realm 服务
@@ -291,9 +290,7 @@ ${CYAN}#############################################################${PLAIN}
 ${CYAN}#############################################################${PLAIN}"
 }
 
-# --- 主循环 ---
 main() {
-    # 强制在 TTY 环境下运行
     [[ ! -t 0 ]] && exec < /dev/tty
     
     while true; do
