@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 智控面板 V3.3 (终极 OTA 双端热更版)
-# 描述: 终端 11 项全功能 + Web 在线配置 + 面板自更新
+# Realm 智控面板 V3.4 (终极 OTA + 双栈网络自适应)
+# 描述: 自动显示 IPv4 / IPv6 Web 访问地址
 # ==========================================
 
 export LANG=en_US.UTF-8
-sh_ver="3.3.0"
+sh_ver="3.4.0"
 
 # --- 核心目录与文件 ---
 CONFIG_DIR="/etc/realm"
@@ -404,11 +404,15 @@ EOF
         
         install_web
         
-        local public_ip=$(curl -s ifconfig.me)
         echo -e "\n${CYAN}🎉 部署全部完成！${PLAIN}"
         echo -e "===================================================="
-        echo -e "🌐 Web 管理地址 : ${GREEN}http://${public_ip}:${WEB_PORT}${PLAIN}"
-        echo -e "🔑 Web 登录密码 : ${YELLOW}${WEB_PASS}${PLAIN}   (仅密码验证)"
+        
+        # 显示双栈 IP
+        [[ -n "$PUBLIC_IPV4" ]] && echo -e "🌐 IPv4 访问 : ${GREEN}http://${PUBLIC_IPV4}:${WEB_PORT}${PLAIN}"
+        [[ -n "$PUBLIC_IPV6" ]] && echo -e "🌐 IPv6 访问 : ${GREEN}http://[${PUBLIC_IPV6}]:${WEB_PORT}${PLAIN}"
+        [[ -z "$PUBLIC_IPV4" && -z "$PUBLIC_IPV6" ]] && echo -e "🌐 Web 访问 : ${GREEN}http://<服务器IP>:${WEB_PORT}${PLAIN}"
+        
+        echo -e "🔑 登录密码 : ${YELLOW}${WEB_PASS}${PLAIN}   (仅密码验证)"
         echo -e "====================================================\n"
         read -p "按回车键进入终端面板..."
     fi
@@ -420,7 +424,6 @@ EOF
 update_system() {
     echo -e "${CYAN}>>> 开始更新 Realm 核心与面板...${PLAIN}"
     
-    # 1. 更新 Realm 核心
     local arch=$(uname -m)
     case "$arch" in
         x86_64) realm_arch="x86_64-unknown-linux-gnu" ;;
@@ -443,20 +446,16 @@ update_system() {
         echo -e "${RED}❌ Realm 核心下载失败${PLAIN}"
     fi
 
-    # 2. 更新面板脚本与 Web 后端
     echo -e "${CYAN}正在拉取最新版面板代码...${PLAIN}"
     wget -qO /tmp/realm-panel.sh "$REPO_URL"
     if [[ -s /tmp/realm-panel.sh ]]; then
         mv /tmp/realm-panel.sh "$PANEL_CMD"
         chmod +x "$PANEL_CMD"
-        
-        # 同步更新 Web 界面并重载
         source "$WEB_CONF"
         install_web
-        
         echo -e "${GREEN}✅ 面板已热更新成功！即将重新加载...${PLAIN}"
         sleep 1.5
-        exec "$PANEL_CMD" # 热重载跳出当前进程
+        exec "$PANEL_CMD"
     else
         echo -e "${RED}❌ 面板代码下载失败，请检查网络！${PLAIN}"
         sleep 2
@@ -520,7 +519,6 @@ config_web() {
     [[ -z "$n_port" ]] && n_port=$WEB_PORT
     [[ -z "$n_pass" ]] && n_pass=$WEB_PASS
     
-    # 调起自身参数更新 Web
     "$PANEL_CMD" update_web "$n_port" "$n_pass"
     echo -e "${GREEN}✅ Web 面板配置已更新并重启！${PLAIN}"
     sleep 1.5
@@ -531,7 +529,7 @@ show_menu() {
     local realm_version="未安装"
     local svc_status="${RED}■ 核心未安装${PLAIN}"
     local rule_count="0"
-    local web_status="${RED}■ 异常${PLAIN}"
+    local web_str=" ${RED}■ 异常${PLAIN}"
     
     if [[ -f "$REALM_BIN" ]]; then
         realm_version=$($REALM_BIN --version 2>/dev/null | awk '{print $2}')
@@ -539,7 +537,13 @@ show_menu() {
         if systemctl is-active --quiet realm; then svc_status="${GREEN}▶ 运行中${PLAIN}"; else svc_status="${YELLOW}■ 已停止${PLAIN}"; fi
         [[ -f "$RULE_FILE" ]] && rule_count=$(wc -l < "$RULE_FILE" 2>/dev/null || echo 0)
     fi
-    if systemctl is-active --quiet realm-web; then web_status="${GREEN}运行中 (端口: ${WEB_PORT})${PLAIN}"; fi
+    
+    # 构建双栈 Web 显示字符串
+    if systemctl is-active --quiet realm-web; then
+        web_str=" ${GREEN}运行中${PLAIN}"
+        [[ -n "$PUBLIC_IPV4" ]] && web_str+="\n IPv4 面板 : ${GREEN}http://${PUBLIC_IPV4}:${WEB_PORT}${PLAIN}"
+        [[ -n "$PUBLIC_IPV6" ]] && web_str+="\n IPv6 面板 : ${GREEN}http://[${PUBLIC_IPV6}]:${WEB_PORT}${PLAIN}"
+    fi
 
     echo -e "
 ${CYAN}#############################################################${PLAIN}
@@ -548,7 +552,7 @@ ${CYAN}#############################################################${PLAIN}
  核心版本 : ${YELLOW}${realm_version}${PLAIN}
  运行状态 : ${svc_status}
  规则总数 : ${GREEN}${rule_count}${PLAIN} 条
- Web 面板 : ${web_status}
+ Web 状态 :${web_str}
 -------------------------------------------------------------
  ${GREEN}1.${PLAIN} 更新 Realm 核心与管理面板 ${YELLOW}(OTA 升级)${PLAIN}
  ${RED}2.${PLAIN} 彻底卸载 Realm 面板
@@ -570,6 +574,12 @@ ${CYAN}#############################################################${PLAIN}"
 
 main() {
     [[ ! -t 0 ]] && exec < /dev/tty
+    
+    # 启动时探测双栈 IP (带 2 秒超时，防止卡顿)
+    echo -e "${CYAN}正在检测服务器网络环境...${PLAIN}"
+    PUBLIC_IPV4=$(curl -s4m2 icanhazip.com || curl -s4m2 ifconfig.me)
+    PUBLIC_IPV6=$(curl -s6m2 icanhazip.com || curl -s6m2 ifconfig.me)
+    
     auto_install
     
     while true; do
