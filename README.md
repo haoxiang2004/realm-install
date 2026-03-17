@@ -25,7 +25,7 @@ wget -O realm-install.sh https://raw.githubusercontent.com/haoxiang2004/realm-in
 ```
 
 ```bash
-wget -O realm-install.sh https://host.wxgwxha.eu.org/https://raw.githubusercontent.com/haoxiang2004/realm-install/main/realm-install.sh && bash realm-install.sh
+wget -O realm-install.sh https://host.wxgwxha.eu.org/https://raw.githubusercontent.com/haoxiang2004/realm-install/main/realm-install-2.sh && bash realm-install.sh
 ```
 
 
