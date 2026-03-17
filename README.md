@@ -24,6 +24,11 @@
 wget -O realm-install.sh https://raw.githubusercontent.com/haoxiang2004/realm-install/main/realm-install.sh && bash realm-install.sh
 ```
 
+```bash
+wget -O realm-install.sh https://host.wxgwxha.eu.org/https://raw.githubusercontent.com/haoxiang2004/realm-install/main/realm-install.sh && bash realm-install.sh
+```
+
+
 > **💡 提示**：首次运行后，脚本会自动将自身注册为系统级命令。以后你只需在终端直接输入 `realm-panel` 即可唤出管理菜单！
 
 ---
